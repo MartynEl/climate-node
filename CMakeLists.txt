@@ -15,6 +15,18 @@ option(CLIMATE_BUILD_HOST_RUNNER "Build host runner" ON)
 option(CLIMATE_BUILD_MCU "Build MCU firmware" OFF)
 option(CLIMATE_WERROR "Treat warnings as errors" ON)
 
+if(CLIMATE_BUILD_MCU AND (CLIMATE_BUILD_HOST_TESTS OR CLIMATE_BUILD_HOST_RUNNER))
+    message(FATAL_ERROR
+        "MCU build must be configured in a separate build directory with "
+        "-DCLIMATE_BUILD_HOST_TESTS=OFF -DCLIMATE_BUILD_HOST_RUNNER=OFF")
+endif()
+
+if(CLIMATE_BUILD_MCU AND NOT CMAKE_CROSSCOMPILING)
+    message(FATAL_ERROR
+        "MCU build requires a cross toolchain. "
+        "Use -DCMAKE_TOOLCHAIN_FILE=cmake/arm-none-eabi.cmake")
+endif()
+
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
 
 set(GENERATED_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated)
@@ -96,4 +108,58 @@ endif()
 if(CLIMATE_BUILD_HOST_TESTS)
     enable_testing()
     add_subdirectory(tests)
+endif()
+
+if(CLIMATE_BUILD_MCU)
+    set_source_files_properties(
+        src/bsp/stm32f1/startup_stm32f103.c
+        PROPERTIES COMPILE_OPTIONS "-Wno-pedantic;-Wno-error"
+    )
+
+    set_source_files_properties(
+        src/platform/stm32f1/platform_stm32f1.c
+        PROPERTIES COMPILE_OPTIONS "-Wno-pedantic"
+    )
+
+    add_executable(climate_fw
+        src/app/main_mcu.c
+        src/app/app.c
+        src/app/scheduler.c
+        src/driver/stub_sensor.c
+        src/platform/stm32f1/platform_stm32f1.c
+        src/bsp/stm32f1/startup_stm32f103.c
+        src/service/logger.c
+    )
+
+    target_link_libraries(climate_fw PRIVATE climate_core)
+
+    target_include_directories(climate_fw PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+    )
+
+    target_compile_options(climate_fw PRIVATE
+        -Wall
+        -Wextra
+        -Wshadow
+        -Wdouble-promotion
+        -Wformat=2
+    )
+
+    if(CLIMATE_WERROR)
+        target_compile_options(climate_fw PRIVATE -Werror)
+    endif()
+
+    target_link_options(climate_fw PRIVATE
+        -T ${CMAKE_CURRENT_SOURCE_DIR}/src/bsp/stm32f1/stm32f103c8tx.ld
+        -Wl,--gc-sections
+        -Wl,-Map=climate_fw.map
+        -Wl,--print-memory-usage
+    )
+
+    add_custom_command(TARGET climate_fw POST_BUILD
+        COMMAND ${CMAKE_OBJCOPY} -O ihex $<TARGET_FILE:climate_fw> ${CMAKE_CURRENT_BINARY_DIR}/climate_fw.hex
+        COMMAND ${CMAKE_OBJCOPY} -O binary $<TARGET_FILE:climate_fw> ${CMAKE_CURRENT_BINARY_DIR}/climate_fw.bin
+        COMMAND ${CMAKE_SIZE} $<TARGET_FILE:climate_fw>
+        VERBATIM
+    )
 endif()
