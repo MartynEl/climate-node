@@ -1,6 +1,8 @@
 #include "platform/platform.h"
 #include "platform/host/platform_host.h"
 
+#include <stdio.h>
+
 static uint32_t g_now_ms = 0;
 static bool g_relay = false;
 
@@ -32,4 +34,14 @@ void platform_relay_set(bool on)
 bool platform_relay_get(void)
 {
     return g_relay;
+}
+
+void platform_write(const char *data, size_t len)
+{
+    if (data == NULL || len == 0u) {
+        return;
+    }
+
+    fwrite(data, 1u, len, stdout);
+    fflush(stdout);
 }

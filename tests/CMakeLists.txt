@@ -35,3 +35,29 @@ target_include_directories(test_controller PRIVATE
 )
 
 add_test(NAME controller COMMAND test_controller)
+
+add_executable(test_scheduler
+    test_scheduler.c
+    ${CMAKE_SOURCE_DIR}/src/app/scheduler.c
+)
+
+target_link_libraries(test_scheduler PRIVATE climate_core)
+
+target_include_directories(test_scheduler PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
+target_compile_options(test_scheduler PRIVATE
+    -Wall
+    -Wextra
+    -Wpedantic
+    -Wshadow
+    -Wdouble-promotion
+    -Wformat=2
+)
+
+if(CLIMATE_WERROR)
+    target_compile_options(test_scheduler PRIVATE -Werror)
+endif()
+
+add_test(NAME scheduler COMMAND test_scheduler)

@@ -66,8 +66,10 @@ if(CLIMATE_BUILD_HOST_RUNNER)
     add_executable(climate_host
         src/app/main_host.c
         src/app/app.c
+        src/app/scheduler.c
         src/driver/mock_sensor.c
         src/platform/host/platform_host.c
+        src/service/logger.c
     )
 
     target_link_libraries(climate_host PRIVATE climate_core)
