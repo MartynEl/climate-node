@@ -11,6 +11,7 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
 endif()
 
 option(CLIMATE_BUILD_HOST_TESTS "Build host unit tests" ON)
+option(CLIMATE_BUILD_HOST_RUNNER "Build host runner" ON)
 option(CLIMATE_BUILD_MCU "Build MCU firmware" OFF)
 option(CLIMATE_WERROR "Treat warnings as errors" ON)
 
@@ -59,6 +60,34 @@ target_compile_options(climate_core PRIVATE
 
 if(CLIMATE_WERROR)
     target_compile_options(climate_core PRIVATE -Werror)
+endif()
+
+if(CLIMATE_BUILD_HOST_RUNNER)
+    add_executable(climate_host
+        src/app/main_host.c
+        src/app/app.c
+        src/driver/mock_sensor.c
+        src/platform/host/platform_host.c
+    )
+
+    target_link_libraries(climate_host PRIVATE climate_core)
+
+    target_include_directories(climate_host PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+    )
+
+    target_compile_options(climate_host PRIVATE
+        -Wall
+        -Wextra
+        -Wpedantic
+        -Wshadow
+        -Wdouble-promotion
+        -Wformat=2
+    )
+
+    if(CLIMATE_WERROR)
+        target_compile_options(climate_host PRIVATE -Werror)
+    endif()
 endif()
 
 if(CLIMATE_BUILD_HOST_TESTS)
