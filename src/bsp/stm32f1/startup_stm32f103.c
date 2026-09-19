@@ -33,34 +33,49 @@ void SysTick_Handler(void)
     SystemTicks++;
 }
 
+/*
+ * Defined in src/bsp/stm32f1/uart.c.
+ */
+void USART1_IRQHandler(void);
+
+/*
+ * Cortex-M3 vector table:
+ *   0..15  core exceptions
+ *   16..   external IRQs
+ *
+ * STM32F103 USART1_IRQn = 37, therefore vector index = 16 + 37 = 53.
+ */
 __attribute__((section(".isr_vector"), used))
 const uint32_t g_isr_vector[] = {
-    (uint32_t)&_estack,
-    (uint32_t)Reset_Handler,
-    (uint32_t)NMI_Handler,
-    (uint32_t)HardFault_Handler,
-    (uint32_t)MemManage_Handler,
-    (uint32_t)BusFault_Handler,
-    (uint32_t)UsageFault_Handler,
+    [0]  = (uint32_t)&_estack,
+    [1]  = (uint32_t)Reset_Handler,
+    [2]  = (uint32_t)NMI_Handler,
+    [3]  = (uint32_t)HardFault_Handler,
+    [4]  = (uint32_t)MemManage_Handler,
+    [5]  = (uint32_t)BusFault_Handler,
+    [6]  = (uint32_t)UsageFault_Handler,
 
-    0,
-    0,
-    0,
-    0,
+    [7]  = 0u,
+    [8]  = 0u,
+    [9]  = 0u,
+    [10] = 0u,
 
-    (uint32_t)SVCall_Handler,
-    (uint32_t)DebugMon_Handler,
-    0,
-    0,
-    (uint32_t)PendSV_Handler,
-    (uint32_t)SysTick_Handler
+    [11] = (uint32_t)SVCall_Handler,
+    [12] = (uint32_t)DebugMon_Handler,
+    [13] = 0u,
+    [14] = 0u,
+    [15] = (uint32_t)PendSV_Handler,
+    [16] = (uint32_t)SysTick_Handler,
+
+    [17 ... 52] = (uint32_t)Default_Handler,
+    [53]        = (uint32_t)USART1_IRQHandler,
+    [54 ... 67] = (uint32_t)Default_Handler
 };
 
 void Reset_Handler(void)
 {
     /*
      * Set vector table offset register to flash base.
-     * For STM32F103 with this linker script, code starts at 0x08000000.
      */
     volatile uint32_t *vtor = (volatile uint32_t *)0xE000ED08UL;
     *vtor = 0x08000000UL;

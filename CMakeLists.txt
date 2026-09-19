@@ -52,6 +52,7 @@ add_library(climate_core STATIC
     src/core/controller.c
     src/core/diagnostics.c
     src/service/modbus.c
+    src/service/modbus_server.c
 )
 
 add_dependencies(climate_core climate_generate_lut)

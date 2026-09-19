@@ -5,52 +5,64 @@
 
 /*
  * STM32F103 USART1 registers.
- *
- * This is intentionally minimal and register-level.
- * Later this can be replaced by HAL/LL or DMA implementation.
  */
-#define RCC_BASE            0x40021000UL
-#define RCC_APB2ENR         (*(volatile uint32_t *)(RCC_BASE + 0x18UL))
+#define RCC_BASE             0x40021000UL
+#define RCC_APB2ENR          (*(volatile uint32_t *)(RCC_BASE + 0x18UL))
 
-#define RCC_APB2ENR_IOPAEN  (1UL << 2)
+#define RCC_APB2ENR_IOPAEN   (1UL << 2)
 #define RCC_APB2ENR_USART1EN (1UL << 14)
 
-#define GPIOA_BASE          0x40010800UL
-#define GPIOA_CRH           (*(volatile uint32_t *)(GPIOA_BASE + 0x04UL))
+#define GPIOA_BASE           0x40010800UL
+#define GPIOA_CRH            (*(volatile uint32_t *)(GPIOA_BASE + 0x04UL))
 
-#define USART1_BASE         0x40013800UL
-#define USART1_SR           (*(volatile uint32_t *)(USART1_BASE + 0x00UL))
-#define USART1_DR           (*(volatile uint32_t *)(USART1_BASE + 0x04UL))
-#define USART1_BRR          (*(volatile uint32_t *)(USART1_BASE + 0x08UL))
-#define USART1_CR1          (*(volatile uint32_t *)(USART1_BASE + 0x0CUL))
-#define USART1_CR2          (*(volatile uint32_t *)(USART1_BASE + 0x10UL))
-#define USART1_CR3          (*(volatile uint32_t *)(USART1_BASE + 0x14UL))
+#define USART1_BASE          0x40013800UL
+#define USART1_SR            (*(volatile uint32_t *)(USART1_BASE + 0x00UL))
+#define USART1_DR            (*(volatile uint32_t *)(USART1_BASE + 0x04UL))
+#define USART1_BRR           (*(volatile uint32_t *)(USART1_BASE + 0x08UL))
+#define USART1_CR1           (*(volatile uint32_t *)(USART1_BASE + 0x0CUL))
+#define USART1_CR2           (*(volatile uint32_t *)(USART1_BASE + 0x10UL))
+#define USART1_CR3           (*(volatile uint32_t *)(USART1_BASE + 0x14UL))
 
-#define USART1_SR_TXE       (1UL << 7)
+#define USART1_SR_RXNE       (1UL << 5)
+#define USART1_SR_ORE        (1UL << 3)
+#define USART1_SR_TXE        (1UL << 7)
 
-#define USART1_CR1_UE       (1UL << 13)
-#define USART1_CR1_TE       (1UL << 3)
+#define USART1_CR1_UE        (1UL << 13)
+#define USART1_CR1_TE        (1UL << 3)
+#define USART1_CR1_RE        (1UL << 2)
+#define USART1_CR1_RXNEIE    (1UL << 5)
+
+/*
+ * NVIC interrupt set enable register 1: IRQ 32..63.
+ * USART1_IRQn for STM32F103 is 37.
+ */
+#define NVIC_ISER1           (*(volatile uint32_t *)0xE000E104UL)
+#define USART1_IRQ_BIT       (1UL << (37UL - 32UL))
 
 /*
  * Default clock in this skeleton is HSI 8 MHz.
  * 115200 baud, oversampling by 16:
- *
- *   8000000 / 115200 = 69.444...
- *   mantissa = 69
- *   fraction = round(0.444 * 16) = 7
- *   BRR = (69 << 4) | 7 = 0x457
+ *   BRR = 0x457
  */
 #define USART1_BRR_115200_8MHZ 0x457UL
 
-#define UART1_TX_RING_SIZE 128u
-#define UART1_TX_RING_MASK (UART1_TX_RING_SIZE - 1u)
-#define UART1_TX_MAX_PER_TASK 16u
+#define UART1_TX_RING_SIZE     128u
+#define UART1_TX_RING_MASK     (UART1_TX_RING_SIZE - 1u)
+#define UART1_TX_MAX_PER_TASK  16u
+
+#define UART1_RX_RING_SIZE     256u
+#define UART1_RX_RING_MASK     (UART1_RX_RING_SIZE - 1u)
 
 static uint8_t g_tx_ring[UART1_TX_RING_SIZE];
 static size_t g_tx_head = 0u;
 static size_t g_tx_tail = 0u;
 static size_t g_tx_count = 0u;
 static uint32_t g_tx_dropped = 0u;
+
+static uint8_t g_rx_ring[UART1_RX_RING_SIZE];
+static volatile uint16_t g_rx_head = 0u;
+static volatile uint16_t g_rx_tail = 0u;
+static volatile uint32_t g_rx_overflow = 0u;
 
 void uart1_init(void)
 {
@@ -60,27 +72,37 @@ void uart1_init(void)
     RCC_APB2ENR |= RCC_APB2ENR_IOPAEN | RCC_APB2ENR_USART1EN;
 
     /*
-     * Configure PA9 as USART1_TX.
+     * PA9 = USART1_TX:
+     *   50 MHz alternate function push-pull => 0xB in CRH nibble for pin 9.
      *
-     * PA9 is controlled by CRH bits [7:4].
-     * Mode: 50 MHz output.
-     * Configuration: alternate function push-pull.
-     * Value: 0xB.
+     * PA10 = USART1_RX:
+     *   floating input => 0x4 in CRH nibble for pin 10.
      */
     uint32_t crh = GPIOA_CRH;
+
     crh &= ~(0xFUL << 4);
     crh |= (0xBUL << 4);
+
+    crh &= ~(0xFUL << 8);
+    crh |= (0x4UL << 8);
+
     GPIOA_CRH = crh;
 
-    /*
-     * USART1 configuration:
-     *   115200 8N1
-     *   transmitter enabled
-     */
+    g_tx_head = 0u;
+    g_tx_tail = 0u;
+    g_tx_count = 0u;
+    g_tx_dropped = 0u;
+
+    g_rx_head = 0u;
+    g_rx_tail = 0u;
+    g_rx_overflow = 0u;
+
     USART1_BRR = USART1_BRR_115200_8MHZ;
     USART1_CR2 = 0u;
     USART1_CR3 = 0u;
-    USART1_CR1 = USART1_CR1_UE | USART1_CR1_TE;
+    USART1_CR1 = USART1_CR1_UE | USART1_CR1_TE | USART1_CR1_RE | USART1_CR1_RXNEIE;
+
+    NVIC_ISER1 |= USART1_IRQ_BIT;
 }
 
 size_t uart1_tx_bytes(const uint8_t *data, size_t len)
@@ -125,4 +147,52 @@ void uart1_task(void)
 uint32_t uart1_dropped_bytes(void)
 {
     return g_tx_dropped;
+}
+
+bool uart1_rx_pop(void *ctx, uint8_t *out)
+{
+    (void)ctx;
+
+    if (out == NULL) {
+        return false;
+    }
+
+    uint16_t tail = g_rx_tail;
+
+    if (tail == g_rx_head) {
+        return false;
+    }
+
+    *out = g_rx_ring[tail];
+    g_rx_tail = (uint16_t)((tail + 1u) & UART1_RX_RING_MASK);
+
+    return true;
+}
+
+uint32_t uart1_rx_overflow_count(void)
+{
+    return g_rx_overflow;
+}
+
+void USART1_IRQHandler(void)
+{
+    uint32_t sr = USART1_SR;
+
+    if ((sr & (USART1_SR_RXNE | USART1_SR_ORE)) != 0u) {
+        uint8_t byte = (uint8_t)(USART1_DR & 0xFFu);
+
+        if ((sr & USART1_SR_ORE) != 0u) {
+            g_rx_overflow++;
+        }
+
+        uint16_t head = g_rx_head;
+        uint16_t next = (uint16_t)((head + 1u) & UART1_RX_RING_MASK);
+
+        if (next != g_rx_tail) {
+            g_rx_ring[head] = byte;
+            g_rx_head = next;
+        } else {
+            g_rx_overflow++;
+        }
+    }
 }
