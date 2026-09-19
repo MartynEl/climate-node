@@ -51,6 +51,7 @@ add_library(climate_core STATIC
     src/core/dewpoint.c
     src/core/controller.c
     src/core/diagnostics.c
+    src/service/modbus.c
 )
 
 add_dependencies(climate_core climate_generate_lut)
