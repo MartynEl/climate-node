@@ -2,6 +2,7 @@
 
 #include "app/app.h"
 #include "app/scheduler.h"
+#include "core/diagnostics.h"
 #include "core/errors.h"
 #include "driver/mock_sensor.h"
 #include "platform/host/platform_host.h"
@@ -28,6 +29,11 @@ static const char *state_name(ctrl_state_t s)
     }
 }
 
+typedef struct {
+    app_t *app;
+    diagnostics_t *diag;
+} host_ctx_t;
+
 static void log_timestamp(uint32_t ms)
 {
     logger_write_char('[');
@@ -35,48 +41,49 @@ static void log_timestamp(uint32_t ms)
     logger_write_str("] ");
 }
 
-static void log_control_result(const app_t *app, err_t e)
+static void log_control_result(const app_report_t *r, err_t e)
 {
     if (!logger_level_enabled(LOG_LEVEL_INFO)) {
         return;
     }
 
-    app_report_t r = app_report(app);
-
     log_timestamp(platform_millis());
 
     logger_write_str("state=");
-    logger_write_str(state_name(r.state));
+    logger_write_str(state_name(r->state));
 
     logger_write_str(" err=");
     logger_write_str(err_str(e));
 
     logger_write_str(" T=");
-    logger_write_fixed_cd(r.filtered_temp_cd);
+    logger_write_fixed_cd(r->filtered_temp_cd);
 
     logger_write_str(" RH=");
-    logger_write_fixed_cp(r.humidity_cp);
+    logger_write_fixed_cp(r->humidity_cp);
 
     logger_write_str(" DP=");
-    logger_write_fixed_cd(r.dew_point_cd);
+    logger_write_fixed_cd(r->dew_point_cd);
 
     logger_write_str(" RELAY=");
-    logger_write_char(r.relay_on ? '1' : '0');
+    logger_write_char(r->relay_on ? '1' : '0');
 
     logger_new_line();
 }
 
 static void control_task(void *ctx)
 {
-    app_t *app = (app_t *)ctx;
+    host_ctx_t *c = (host_ctx_t *)ctx;
 
     uint32_t now = platform_millis();
     bool processed = false;
 
-    err_t e = app_task(app, now, &processed);
+    err_t e = app_task(c->app, now, &processed);
 
     if (processed) {
-        log_control_result(app, e);
+        app_report_t r = app_report(c->app);
+
+        diag_record(c->diag, now, r.state, e, r.relay_on, true);
+        log_control_result(&r, e);
     }
 }
 
@@ -92,19 +99,28 @@ static void diagnostics_task(void *ctx)
         return;
     }
 
-    app_t *app = (app_t *)ctx;
-    app_report_t r = app_report(app);
+    host_ctx_t *c = (host_ctx_t *)ctx;
+    uint32_t now = platform_millis();
 
-    log_timestamp(platform_millis());
+    log_timestamp(now);
 
-    logger_write_str("DIAG samples=");
-    logger_write_u32(r.sample_count);
+    logger_write_str("DIAG uptime=");
+    logger_write_u32(diag_uptime_ms(c->diag, now));
 
-    logger_write_str(" faults=");
-    logger_write_u32(r.fault_count);
+    logger_write_str(" samples=");
+    logger_write_u32(c->diag->sample_count);
+
+    logger_write_str(" fault_events=");
+    logger_write_u32(c->diag->fault_events);
+
+    logger_write_str(" sensor_errors=");
+    logger_write_u32(c->diag->sensor_error_count);
+
+    logger_write_str(" warmups=");
+    logger_write_u32(c->diag->warmup_count);
 
     logger_write_str(" state=");
-    logger_write_str(state_name(r.state));
+    logger_write_str(state_name(c->diag->last_state));
 
     logger_new_line();
 
@@ -127,6 +143,14 @@ int main(void)
     app_t app;
     app_init(&app, &sensor, &cfg);
 
+    diagnostics_t diag;
+    diag_init(&diag, 0u);
+
+    host_ctx_t ctx = {
+        .app = &app,
+        .diag = &diag
+    };
+
     logger_init();
     logger_set_level(LOG_LEVEL_INFO);
 
@@ -135,9 +159,9 @@ int main(void)
 
     sched_init(&sched, tasks, 4u);
 
-    (void)sched_register(&sched, 50u, control_task, &app, "control");
+    (void)sched_register(&sched, 50u, control_task, &ctx, "control");
     (void)sched_register(&sched, 10u, logger_periodic_task, NULL, "logger");
-    (void)sched_register(&sched, 1000u, diagnostics_task, &app, "diag");
+    (void)sched_register(&sched, 1000u, diagnostics_task, &ctx, "diag");
 
     logger_write_str("[BOOT] climate-node host runner started");
     logger_new_line();
@@ -156,15 +180,24 @@ int main(void)
 
     logger_flush();
 
-    app_report_t final = app_report(&app);
+    uint32_t now = platform_millis();
 
-    log_timestamp(platform_millis());
+    log_timestamp(now);
 
-    logger_write_str("DONE samples=");
-    logger_write_u32(final.sample_count);
+    logger_write_str("DONE uptime=");
+    logger_write_u32(diag_uptime_ms(&diag, now));
 
-    logger_write_str(" faults=");
-    logger_write_u32(final.fault_count);
+    logger_write_str(" samples=");
+    logger_write_u32(diag.sample_count);
+
+    logger_write_str(" fault_events=");
+    logger_write_u32(diag.fault_events);
+
+    logger_write_str(" sensor_errors=");
+    logger_write_u32(diag.sensor_error_count);
+
+    logger_write_str(" warmups=");
+    logger_write_u32(diag.warmup_count);
 
     logger_new_line();
 

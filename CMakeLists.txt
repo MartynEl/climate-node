@@ -38,6 +38,7 @@ add_library(climate_core STATIC
     src/core/filter.c
     src/core/dewpoint.c
     src/core/controller.c
+    src/core/diagnostics.c
 )
 
 add_dependencies(climate_core climate_generate_lut)

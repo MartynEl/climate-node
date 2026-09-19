@@ -61,3 +61,28 @@ if(CLIMATE_WERROR)
 endif()
 
 add_test(NAME scheduler COMMAND test_scheduler)
+
+add_executable(test_diagnostics
+    test_diagnostics.c
+)
+
+target_link_libraries(test_diagnostics PRIVATE climate_core)
+
+target_include_directories(test_diagnostics PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
+target_compile_options(test_diagnostics PRIVATE
+    -Wall
+    -Wextra
+    -Wpedantic
+    -Wshadow
+    -Wdouble-promotion
+    -Wformat=2
+)
+
+if(CLIMATE_WERROR)
+    target_compile_options(test_diagnostics PRIVATE -Werror)
+endif()
+
+add_test(NAME diagnostics COMMAND test_diagnostics)
