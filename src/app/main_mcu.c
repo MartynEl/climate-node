@@ -32,7 +32,9 @@ static void control_task(void *ctx)
 static void logger_poll_task(void *ctx)
 {
     (void)ctx;
+
     logger_task();
+    platform_poll();
 }
 
 int main(void)

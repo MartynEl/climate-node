@@ -45,3 +45,8 @@ void platform_write(const char *data, size_t len)
     fwrite(data, 1u, len, stdout);
     fflush(stdout);
 }
+
+void platform_poll(void)
+{
+    /* Host: nothing to poll. */
+}

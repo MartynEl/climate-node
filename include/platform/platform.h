@@ -13,5 +13,6 @@ void platform_relay_set(bool on);
 bool platform_relay_get(void);
 
 void platform_write(const char *data, size_t len);
+void platform_poll(void);
 
 #endif // PLATFORM_PLATFORM_H

@@ -4,25 +4,27 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "bsp/stm32f1/uart.h"
+
 extern volatile uint32_t SystemTicks;
 
-#define RCC_BASE           0x40021000UL
-#define RCC_APB2ENR        (*(volatile uint32_t *)(RCC_BASE + 0x18UL))
-#define RCC_APB2ENR_IOPCEN (1UL << 4)
+#define RCC_BASE            0x40021000UL
+#define RCC_APB2ENR         (*(volatile uint32_t *)(RCC_BASE + 0x18UL))
+#define RCC_APB2ENR_IOPCEN  (1UL << 4)
 
-#define GPIOC_BASE  0x40011000UL
-#define GPIOC_CRH   (*(volatile uint32_t *)(GPIOC_BASE + 0x04UL))
-#define GPIOC_BSRR  (*(volatile uint32_t *)(GPIOC_BASE + 0x0CUL))
-#define GPIOC_BRR   (*(volatile uint32_t *)(GPIOC_BASE + 0x10UL))
+#define GPIOC_BASE          0x40011000UL
+#define GPIOC_CRH           (*(volatile uint32_t *)(GPIOC_BASE + 0x04UL))
+#define GPIOC_BSRR          (*(volatile uint32_t *)(GPIOC_BASE + 0x0CUL))
+#define GPIOC_BRR           (*(volatile uint32_t *)(GPIOC_BASE + 0x10UL))
 
-#define SYSTICK_BASE             0xE000E010UL
-#define SYSTICK_CTRL             (*(volatile uint32_t *)(SYSTICK_BASE + 0x00UL))
-#define SYSTICK_LOAD             (*(volatile uint32_t *)(SYSTICK_BASE + 0x04UL))
-#define SYSTICK_VAL              (*(volatile uint32_t *)(SYSTICK_BASE + 0x08UL))
+#define SYSTICK_BASE        0xE000E010UL
+#define SYSTICK_CTRL        (*(volatile uint32_t *)(SYSTICK_BASE + 0x00UL))
+#define SYSTICK_LOAD        (*(volatile uint32_t *)(SYSTICK_BASE + 0x04UL))
+#define SYSTICK_VAL         (*(volatile uint32_t *)(SYSTICK_BASE + 0x08UL))
 
-#define SYSTICK_CTRL_ENABLE      (1UL << 0)
-#define SYSTICK_CTRL_TICKINT     (1UL << 1)
-#define SYSTICK_CTRL_CLKSOURCE   (1UL << 2)
+#define SYSTICK_CTRL_ENABLE    (1UL << 0)
+#define SYSTICK_CTRL_TICKINT   (1UL << 1)
+#define SYSTICK_CTRL_CLKSOURCE (1UL << 2)
 
 #define PLATFORM_CLOCK_HZ 8000000UL
 #define SYSTICK_RELOAD_1MS ((PLATFORM_CLOCK_HZ / 1000UL) - 1UL)
@@ -34,7 +36,6 @@ void stm32f1_platform_init(void)
     /*
      * Enable GPIOC clock.
      * PC13 is commonly used as onboard LED on Blue Pill-like boards.
-     * LED is usually active-low.
      */
     RCC_APB2ENR |= RCC_APB2ENR_IOPCEN;
 
@@ -53,11 +54,16 @@ void stm32f1_platform_init(void)
 
     /*
      * SysTick: 1 ms tick from default HSI 8 MHz.
-     * This is intentionally minimal. Proper clock configuration comes later.
+     * Proper clock configuration comes later.
      */
     SYSTICK_LOAD = SYSTICK_RELOAD_1MS;
-    SYSTICK_VAL = 0;
+    SYSTICK_VAL = 0u;
     SYSTICK_CTRL = SYSTICK_CTRL_CLKSOURCE | SYSTICK_CTRL_TICKINT | SYSTICK_CTRL_ENABLE;
+
+    /*
+     * UART1 for non-blocking logger output.
+     */
+    uart1_init();
 }
 
 uint32_t platform_millis(void)
@@ -98,11 +104,15 @@ bool platform_relay_get(void)
 
 void platform_write(const char *data, size_t len)
 {
-    (void)data;
-    (void)len;
+    if (data == NULL || len == 0u) {
+        return;
+    }
 
-    /*
-     * TODO: non-blocking UART TX logger in a later commit.
-     * For the build skeleton, logging is intentionally no-op on MCU.
-     */
+    size_t accepted = uart1_tx_bytes((const uint8_t *)data, len);
+    (void)accepted;
+}
+
+void platform_poll(void)
+{
+    uart1_task();
 }

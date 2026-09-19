@@ -121,6 +121,11 @@ if(CLIMATE_BUILD_MCU)
         PROPERTIES COMPILE_OPTIONS "-Wno-pedantic"
     )
 
+    set_source_files_properties(
+        src/bsp/stm32f1/uart.c
+        PROPERTIES COMPILE_OPTIONS "-Wno-pedantic"
+    )
+
     add_executable(climate_fw
         src/app/main_mcu.c
         src/app/app.c
@@ -128,6 +133,7 @@ if(CLIMATE_BUILD_MCU)
         src/driver/stub_sensor.c
         src/platform/stm32f1/platform_stm32f1.c
         src/bsp/stm32f1/startup_stm32f103.c
+        src/bsp/stm32f1/uart.c
         src/service/logger.c
     )
 
