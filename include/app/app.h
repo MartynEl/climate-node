@@ -6,6 +6,7 @@
 
 #include "core/controller.h"
 #include "driver/sensor.h"
+#include "service/storage.h"
 
 typedef struct {
     ctrl_state_t state;
@@ -24,17 +25,22 @@ typedef struct {
 typedef struct {
     controller_t ctrl;
     sensor_port_t sensor;
+    device_config_t cfg;
 
-    uint32_t sample_period_ms;
     uint32_t next_sample_ms;
-
     bool relay_prev;
 } app_t;
 
-void app_init(app_t *app, const sensor_port_t *sensor, const controller_config_t *cfg);
+void app_init(app_t *app, const sensor_port_t *sensor);
+
+/* Apply current config to controller */
+void app_apply_config(app_t *app);
 
 err_t app_task(app_t *app, uint32_t now_ms, bool *processed);
 
 app_report_t app_report(const app_t *app);
+
+/* Update config and save */
+err_t app_update_config(app_t *app, const device_config_t *new_cfg);
 
 #endif // APP_APP_H

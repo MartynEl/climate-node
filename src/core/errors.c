@@ -27,6 +27,8 @@ const char *err_str(err_t e)
         return "CONFIG";
     case ERR_HW:
         return "HW";
+    case ERR_NOT_FOUND:
+        return "NOT_FOUND";
     default:
         return "UNKNOWN";
     }

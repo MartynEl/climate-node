@@ -1,5 +1,6 @@
 #include "platform/stm32f1/platform_stm32f1.h"
 #include "platform/platform.h"
+#include "service/storage.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -29,40 +30,27 @@ extern volatile uint32_t SystemTicks;
 #define PLATFORM_CLOCK_HZ 8000000UL
 #define SYSTICK_RELOAD_1MS ((PLATFORM_CLOCK_HZ / 1000UL) - 1UL)
 
+/* Flash Layout for STM32F103C8T6 (64KB) */
+#define FLASH_CONFIG_A_ADDR 0x0800F800UL
+#define FLASH_CONFIG_B_ADDR 0x0800FC00UL
+
 static bool g_relay_state = false;
 
 void stm32f1_platform_init(void)
 {
-    /*
-     * Enable GPIOC clock.
-     * PC13 is commonly used as onboard LED on Blue Pill-like boards.
-     */
     RCC_APB2ENR |= RCC_APB2ENR_IOPCEN;
 
-    /*
-     * Configure PC13 as general purpose output, 2 MHz.
-     * CRH controls pins 8..15.
-     * Pin 13 occupies bits 20..23.
-     */
     uint32_t crh = GPIOC_CRH;
     crh &= ~(0xFUL << 20);
     crh |= (0x2UL << 20);
     GPIOC_CRH = crh;
 
-    /* Turn LED off initially: set PC13 high. */
     GPIOC_BSRR = (1UL << 13);
 
-    /*
-     * SysTick: 1 ms tick from default HSI 8 MHz.
-     * Proper clock configuration comes later.
-     */
     SYSTICK_LOAD = SYSTICK_RELOAD_1MS;
     SYSTICK_VAL = 0u;
     SYSTICK_CTRL = SYSTICK_CTRL_CLKSOURCE | SYSTICK_CTRL_TICKINT | SYSTICK_CTRL_ENABLE;
 
-    /*
-     * UART1 for non-blocking logger output.
-     */
     uart1_init();
 }
 
@@ -78,18 +66,12 @@ void platform_wfi(void)
 
 void platform_watchdog_feed(void)
 {
-    /* TODO: IWDG in a later commit. */
+    /* TODO: IWDG */
 }
 
 void platform_relay_set(bool on)
 {
     g_relay_state = on;
-
-    /*
-     * Active-low LED/relay convention on many STM32F103 boards:
-     *   on  -> drive PC13 low
-     *   off -> drive PC13 high
-     */
     if (on) {
         GPIOC_BRR = (1UL << 13);
     } else {
@@ -107,12 +89,74 @@ void platform_write(const char *data, size_t len)
     if (data == NULL || len == 0u) {
         return;
     }
-
-    size_t accepted = uart1_tx_bytes((const uint8_t *)data, len);
-    (void)accepted;
+    uart1_tx_bytes((const uint8_t *)data, len);
 }
 
 void platform_poll(void)
 {
     uart1_task();
+}
+
+/* --- Real Flash Implementation (Skeleton) --- */
+
+err_t platform_flash_read_config(uint32_t slot_index, device_config_t *out)
+{
+    if (out == NULL) {
+        return ERR_INVALID_ARG;
+    }
+
+    uint32_t addr = (slot_index == 0u) ? FLASH_CONFIG_A_ADDR : FLASH_CONFIG_B_ADDR;
+    const uint32_t *flash_ptr = (const uint32_t *)addr;
+
+    /* Read word-by-word into struct */
+    uint8_t *dst = (uint8_t *)out;
+    for (size_t i = 0; i < sizeof(device_config_t); i += 4) {
+        uint32_t val = *flash_ptr++;
+        dst[i] = (uint8_t)(val & 0xFF);
+        dst[i+1] = (uint8_t)((val >> 8) & 0xFF);
+        dst[i+2] = (uint8_t)((val >> 16) & 0xFF);
+        dst[i+3] = (uint8_t)((val >> 24) & 0xFF);
+    }
+
+    /* Check if erased (all 0xFF) */
+    bool empty = true;
+    for (size_t i = 0; i < sizeof(device_config_t); ++i) {
+        if (dst[i] != 0xFF) {
+            empty = false;
+            break;
+        }
+    }
+
+    if (empty) {
+        return ERR_NOT_FOUND;
+    }
+
+    return ERR_OK;
+}
+
+err_t platform_flash_write_config(uint32_t slot_index, const device_config_t *cfg)
+{
+    if (cfg == NULL) {
+        return ERR_INVALID_ARG;
+    }
+
+    /*
+     * WARNING: This is a SKELETON.
+     * Real STM32 Flash programming requires:
+     * 1. Unlocking Flash registers (KEYR).
+     * 2. Erasing the page (PER).
+     * 3. Setting PG bit.
+     * 4. Writing half-words (16-bit) sequentially.
+     * 5. Checking BSY flag.
+     * 6. Locking Flash again.
+     *
+     * For this commit, we intentionally leave it as a NO-OP returning OK,
+     * so the build passes and logic flows, but persistence won't work on HW
+     * until we implement the actual register sequences in Commit 11.
+     */
+    
+    (void)slot_index;
+    (void)cfg;
+    
+    return ERR_OK; 
 }

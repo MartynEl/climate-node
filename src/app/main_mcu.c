@@ -35,6 +35,7 @@ static void sync_registers(mcu_ctx_t *ctx)
 
     app_report_t r = app_report(ctx->app);
 
+    /* Текущие измерения */
     ctx->regs->temp_filt_cd = (int16_t)r.filtered_temp_cd;
     ctx->regs->rh_cp = (uint16_t)r.humidity_cp;
     ctx->regs->dew_point_cd = (int16_t)r.dew_point_cd;
@@ -42,6 +43,54 @@ static void sync_registers(mcu_ctx_t *ctx)
     ctx->regs->dev_status = (uint16_t)r.state;
     ctx->regs->err_count = (uint16_t)ctx->diag->fault_events;
     ctx->regs->uptime_ms = diag_uptime_ms(ctx->diag, platform_millis());
+
+    /* Конфигурация из приложения — НОВОЕ */
+    ctx->regs->cfg_margin_on_cd = ctx->app->cfg.dew_margin_on_cd;
+    ctx->regs->cfg_margin_off_cd = ctx->app->cfg.dew_margin_off_cd;
+    ctx->regs->cfg_sample_ms = ctx->app->cfg.sample_period_ms;
+}
+
+static void apply_modbus_write_to_app(mcu_ctx_t *ctx, uint16_t reg_addr, uint16_t value)
+{
+    if (ctx == NULL || ctx->app == NULL) {
+        return;
+    }
+
+    device_config_t tmp_cfg = ctx->app->cfg;
+    bool changed = false;
+
+    switch (reg_addr) {
+    case MB_CFG_MARGIN_ON:
+        tmp_cfg.dew_margin_on_cd = (int16_t)value;
+        changed = true;
+        break;
+    case MB_CFG_MARGIN_OFF:
+        tmp_cfg.dew_margin_off_cd = (int16_t)value;
+        changed = true;
+        break;
+    case MB_CFG_SAMPLE_MS:
+        if (value == 0u) {
+            return;
+        }
+        tmp_cfg.sample_period_ms = value;
+        changed = true;
+        break;
+    default:
+        return;
+    }
+
+    if (changed) {
+        storage_finalize(&tmp_cfg);
+
+        err_t e = app_update_config(ctx->app, &tmp_cfg);
+
+        if (e != ERR_OK && logger_level_enabled(LOG_LEVEL_WARN)) {
+            log_timestamp(platform_millis());
+            logger_write_str("CFG SAVE ERROR=");
+            logger_write_str(err_str(e));
+            logger_new_line();
+        }
+    }
 }
 
 static void handle_modbus_request(mcu_ctx_t *ctx, const modbus_request_t *req)
@@ -50,7 +99,14 @@ static void handle_modbus_request(mcu_ctx_t *ctx, const modbus_request_t *req)
         return;
     }
 
-    uint8_t resp_buf[256];
+    /*
+     * Единый буфер для формирования ответа.
+     * Структура Modbus RTU Frame:
+     * [Addr(1)] [Func(1)] [Payload(N)] [CRC(2)]
+     * Максимальный размер PDU Modbus = 256 bytes.
+     * Весь кадр <= 258 bytes. Берем с запасом 260.
+     */
+    uint8_t resp_buf[260];
     size_t resp_len = 0u;
 
     /* Sync latest state into registers before reading/writing */
@@ -67,32 +123,46 @@ static void handle_modbus_request(mcu_ctx_t *ctx, const modbus_request_t *req)
         uint16_t start_addr = ((uint16_t)req->data[0] << 8) | req->data[1];
         uint16_t quantity = ((uint16_t)req->data[2] << 8) | req->data[3];
 
+        /* Standard Modbus limit is 125 registers. We enforce it strictly. */
         if (quantity == 0u || quantity > 125u) {
             resp_len = modbus_build_exception(req->slave_addr, 0x03u, MODBUS_EX_ILLEGAL_DATA_VAL, resp_buf, sizeof(resp_buf));
             break;
         }
 
-        /* Calculate byte count for payload */
         size_t byte_count = (size_t)quantity * 2u;
-        
-        /* We need space for Byte Count field + Data */
-        if (resp_len < 1u + byte_count + 2u) { /* Simplified check */
-             /* Actually we build manually below */
+
+        /*
+         * Проверка на переполнение буфера ответа.
+         * Addr(1) + Func(1) + ByteCount(1) + Data(byte_count) + CRC(2)
+         * Total = 5 + byte_count
+         */
+        if (sizeof(resp_buf) < 5u + byte_count) {
+            resp_len = modbus_build_exception(req->slave_addr, 0x03u, MODBUS_EX_SLAVE_DEVICE_FAIL, resp_buf, sizeof(resp_buf));
+            break;
         }
 
-        uint8_t data_payload[250]; /* Max 125 regs * 2 bytes = 250 */
-        
-        if (!mb_regs_read(ctx->regs, start_addr, quantity, data_payload, sizeof(data_payload))) {
+        /* Формируем заголовок ответа вручную в resp_buf */
+        resp_buf[0] = req->slave_addr;
+        resp_buf[1] = 0x03u;       /* Function Code */
+        resp_buf[2] = (uint8_t)byte_count; /* Byte Count field */
+
+        /*
+         * Читаем регистры ПРЯМО в тело ответа, начиная с индекса 3.
+         * Это устраняет необходимость в data_payload[] и final_payload[].
+         */
+        if (!mb_regs_read(ctx->regs, start_addr, quantity, &resp_buf[3], byte_count)) {
             resp_len = modbus_build_exception(req->slave_addr, 0x03u, MODBUS_EX_ILLEGAL_DATA_ADDR, resp_buf, sizeof(resp_buf));
             break;
         }
 
-        /* Build response: [ByteCount] [Data...] */
-        uint8_t final_payload[251];
-        final_payload[0] = (uint8_t)byte_count;
-        memcpy(&final_payload[1], data_payload, byte_count);
+        /* Добавляем CRC к готовому блоку (Header + Payload) */
+        size_t payload_with_header_len = 3u + byte_count; /* Addr + Func + ByteCount + Data */
+        uint16_t crc = modbus_crc16(resp_buf, payload_with_header_len);
+        
+        resp_buf[payload_with_header_len] = (uint8_t)(crc & 0xFFu);
+        resp_buf[payload_with_header_len + 1u] = (uint8_t)(crc >> 8);
 
-        resp_len = modbus_build_response(req->slave_addr, 0x03u, final_payload, 1u + byte_count, resp_buf, sizeof(resp_buf));
+        resp_len = payload_with_header_len + 2u;
     }
     break;
 
@@ -111,8 +181,25 @@ static void handle_modbus_request(mcu_ctx_t *ctx, const modbus_request_t *req)
             break;
         }
 
-        /* Echo back the request as confirmation */
-        resp_len = modbus_build_response(req->slave_addr, 0x06u, req->data, 4u, resp_buf, sizeof(resp_buf));
+        /* Применяем изменение к реальному конфигу и сохраняем */
+        apply_modbus_write_to_app(ctx, reg_addr, value);
+
+        /*
+         * Ответ для 0x06 — эхо исходного запроса (кроме CRC).
+         * Модbus требует вернуть тот же адрес регистра и значение.
+         */
+        resp_buf[0] = req->slave_addr;
+        resp_buf[1] = 0x06u;
+        resp_buf[2] = req->data[0];
+        resp_buf[3] = req->data[1];
+        resp_buf[4] = req->data[2];
+        resp_buf[5] = req->data[3];
+
+        uint16_t crc = modbus_crc16(resp_buf, 6u);
+        resp_buf[6] = (uint8_t)(crc & 0xFFu);
+        resp_buf[7] = (uint8_t)(crc >> 8);
+
+        resp_len = 8u;
     }
     break;
 
@@ -196,11 +283,8 @@ int main(void)
         .ctx = NULL
     };
 
-    controller_config_t cfg = CONTROLLER_DEFAULTS;
-    cfg.sample_period_ms = 1000u;
-
     app_t app;
-    app_init(&app, &sensor, &cfg);
+    app_init(&app, &sensor); /* Loads config internally */
 
     diagnostics_t diag;
     diag_init(&diag, platform_millis());
@@ -221,7 +305,10 @@ int main(void)
 
     sched_init(&sched, tasks, 3u);
 
-    (void)sched_register(&sched, cfg.sample_period_ms, control_task, &ctx, "control");
+    /* Use period from loaded config */
+    uint32_t period = app.ctrl.cfg.sample_period_ms;
+    
+    (void)sched_register(&sched, period, control_task, &ctx, "control");
     (void)sched_register(&sched, 10u, logger_poll_task, NULL, "logger");
     (void)sched_register(&sched, 1u, modbus_task, &ctx, "modbus");
 

@@ -1,28 +1,84 @@
 #include "app/app.h"
 
 #include <stddef.h>
+#include <string.h>
 
 #include "platform/platform.h"
 
-void app_init(app_t *app, const sensor_port_t *sensor, const controller_config_t *cfg)
+void app_init(app_t *app, const sensor_port_t *sensor)
 {
     if (app == NULL || sensor == NULL || sensor->read == NULL) {
         return;
     }
 
-    ctrl_init(&app->ctrl, cfg);
-
     app->sensor = *sensor;
-    app->sample_period_ms = app->ctrl.cfg.sample_period_ms;
-
-    if (app->sample_period_ms == 0u) {
-        app->sample_period_ms = 1000u;
+    
+    /* Load persisted config or defaults */
+    err_t e = storage_load(&app->cfg);
+    if (e != ERR_OK) {
+        /* If load failed, ensure we have valid defaults */
+        storage_load_defaults(&app->cfg);
     }
+
+    /* Init controller with loaded config */
+    controller_config_t ctrl_cfg = {
+        .dew_margin_on_cd = app->cfg.dew_margin_on_cd,
+        .dew_margin_off_cd = app->cfg.dew_margin_off_cd,
+        .sample_period_ms = app->cfg.sample_period_ms,
+        .fault_threshold = 3,
+        .recovery_threshold = 3,
+        .relay_safe_state = false
+    };
+    
+    ctrl_init(&app->ctrl, &ctrl_cfg);
 
     app->next_sample_ms = 0u;
     app->relay_prev = app->ctrl.relay_on;
 
     platform_relay_set(app->relay_prev);
+}
+
+void app_apply_config(app_t *app)
+{
+    if (app == NULL) {
+        return;
+    }
+
+    /* Re-init controller with new params without resetting history completely?
+     * For safety, full re-init is easier for now.
+     */
+    controller_config_t ctrl_cfg = {
+        .dew_margin_on_cd = app->cfg.dew_margin_on_cd,
+        .dew_margin_off_cd = app->cfg.dew_margin_off_cd,
+        .sample_period_ms = app->cfg.sample_period_ms,
+        .fault_threshold = 3,
+        .recovery_threshold = 3,
+        .relay_safe_state = false
+    };
+    
+    ctrl_init(&app->ctrl, &ctrl_cfg);
+}
+
+err_t app_update_config(app_t *app, const device_config_t *new_cfg)
+{
+    if (app == NULL || new_cfg == NULL) {
+        return ERR_INVALID_ARG;
+    }
+
+    /* Validate before saving */
+    if (!storage_validate(new_cfg)) {
+        return ERR_INVALID_ARG;
+    }
+
+    app->cfg = *new_cfg;
+    
+    err_t save_err = storage_save(&app->cfg);
+    if (save_err != ERR_OK) {
+        return save_err;
+    }
+
+    app_apply_config(app);
+    return ERR_OK;
 }
 
 err_t app_task(app_t *app, uint32_t now_ms, bool *processed)
@@ -37,26 +93,17 @@ err_t app_task(app_t *app, uint32_t now_ms, bool *processed)
         return ERR_INVALID_ARG;
     }
 
-    /*
-     * Non-blocking periodic task.
-     * Use signed comparison to handle uint32_t wrap correctly.
-     */
     if ((int32_t)(now_ms - app->next_sample_ms) < 0) {
         return ERR_OK;
     }
 
-    app->next_sample_ms += app->sample_period_ms;
+    app->next_sample_ms += app->ctrl.cfg.sample_period_ms;
 
-    /*
-     * If we missed several periods, do not try to catch up by spinning.
-     * Reschedule from now.
-     */
     if ((int32_t)(app->next_sample_ms - now_ms) < 0) {
-        app->next_sample_ms = now_ms + app->sample_period_ms;
+        app->next_sample_ms = now_ms + app->ctrl.cfg.sample_period_ms;
     }
 
     sample_t s = {0};
-
     err_t e = app->sensor.read(app->sensor.ctx, &s);
 
     if (e != ERR_OK) {
@@ -77,7 +124,6 @@ err_t app_task(app_t *app, uint32_t now_ms, bool *processed)
     platform_watchdog_feed();
 
     *processed = true;
-
     return e;
 }
 

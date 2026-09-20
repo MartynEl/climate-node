@@ -137,11 +137,10 @@ int main(void)
         .ctx = &mock
     };
 
-    controller_config_t cfg = CONTROLLER_DEFAULTS;
-    cfg.sample_period_ms = 50u;
+    mock_flash_init();
 
     app_t app;
-    app_init(&app, &sensor, &cfg);
+    app_init(&app, &sensor);
 
     diagnostics_t diag;
     diag_init(&diag, 0u);

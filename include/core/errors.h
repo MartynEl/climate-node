@@ -13,7 +13,8 @@ typedef enum {
     ERR_COMM,
     ERR_STORAGE,
     ERR_CONFIG,
-    ERR_HW
+    ERR_HW,
+    ERR_NOT_FOUND
 } err_t;
 
 const char *err_str(err_t e);
