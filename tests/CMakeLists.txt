@@ -135,3 +135,28 @@ if(CLIMATE_WERROR)
 endif()
 
 add_test(NAME modbus_server COMMAND test_modbus_server)
+
+add_executable(test_modbus_regs
+    test_modbus_regs.c
+)
+
+target_link_libraries(test_modbus_regs PRIVATE climate_core)
+
+target_include_directories(test_modbus_regs PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
+target_compile_options(test_modbus_regs PRIVATE
+    -Wall
+    -Wextra
+    -Wpedantic
+    -Wshadow
+    -Wdouble-promotion
+    -Wformat=2
+)
+
+if(CLIMATE_WERROR)
+    target_compile_options(test_modbus_regs PRIVATE -Werror)
+endif()
+
+add_test(NAME modbus_regs COMMAND test_modbus_regs)

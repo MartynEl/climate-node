@@ -111,3 +111,66 @@ const char *modbus_parse_err_str(modbus_parse_err_t e)
         return "UNKNOWN";
     }
 }
+
+size_t modbus_build_response(
+    uint8_t slave_addr,
+    uint8_t function,
+    const uint8_t *payload,
+    size_t payload_len,
+    uint8_t *out_buf,
+    size_t out_cap)
+{
+    if (out_buf == NULL || out_cap < 5u) {
+        return 0u;
+    }
+
+    /* Header: Addr + Func */
+    out_buf[0] = slave_addr;
+    out_buf[1] = function;
+
+    /* Payload */
+    if (payload != NULL && payload_len > 0u) {
+        if (2u + payload_len + 2u > out_cap) {
+            return 0u;
+        }
+        for (size_t i = 0u; i < payload_len; ++i) {
+            out_buf[2u + i] = payload[i];
+        }
+    } else {
+        if (2u + 2u > out_cap) {
+            return 0u;
+        }
+    }
+
+    /* CRC over everything except last 2 bytes */
+    size_t total_len_no_crc = 2u + payload_len;
+    uint16_t crc = modbus_crc16(out_buf, total_len_no_crc);
+
+    out_buf[total_len_no_crc] = (uint8_t)(crc & 0xFFu);
+    out_buf[total_len_no_crc + 1u] = (uint8_t)(crc >> 8);
+
+    return total_len_no_crc + 2u;
+}
+
+size_t modbus_build_exception(
+    uint8_t slave_addr,
+    uint8_t original_func,
+    uint8_t exception_code,
+    uint8_t *out_buf,
+    size_t out_cap)
+{
+    if (out_buf == NULL || out_cap < 5u) {
+        return 0u;
+    }
+
+    out_buf[0] = slave_addr;
+    out_buf[1] = original_func | 0x80u; /* Set high bit for exception */
+    out_buf[2] = exception_code;
+
+    uint16_t crc = modbus_crc16(out_buf, 3u);
+
+    out_buf[3] = (uint8_t)(crc & 0xFFu);
+    out_buf[4] = (uint8_t)(crc >> 8);
+
+    return 5u;
+}
