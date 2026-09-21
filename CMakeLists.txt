@@ -51,6 +51,7 @@ add_library(climate_core STATIC
     src/core/dewpoint.c
     src/core/controller.c
     src/core/diagnostics.c
+    src/core/platform_stubs.c
     src/service/modbus.c
     src/service/modbus_server.c
     src/service/modbus_regs.c

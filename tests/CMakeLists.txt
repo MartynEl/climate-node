@@ -163,7 +163,6 @@ add_test(NAME modbus_regs COMMAND test_modbus_regs)
 
 add_executable(test_storage
     test_storage.c
-    ${CMAKE_SOURCE_DIR}/src/platform/host/platform_host.c
 )
 
 target_link_libraries(test_storage PRIVATE climate_core)
