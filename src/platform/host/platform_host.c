@@ -28,9 +28,14 @@ void platform_wfi(void)
     /* Host: nothing to do. */
 }
 
-void platform_watchdog_feed(void)
+void platform_wdg_init(uint32_t timeout_ms)
 {
-    /* Host: watchdog is not implemented yet. */
+    (void)timeout_ms;
+}
+
+void platform_wdg_feed(void)
+{
+    /* Host: nothing to do, or increment debug counter */
 }
 
 void platform_relay_set(bool on)

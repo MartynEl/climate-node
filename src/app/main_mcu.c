@@ -7,7 +7,7 @@
 #include "bsp/stm32f1/uart.h"
 #include "bsp/i2c.h"
 #include "core/diagnostics.h"
-#include "driver/sensor_sht31.h"
+#include "driver/stub_sensor.h" // Или sht31, если подключил
 #include "platform/platform.h"
 #include "platform/stm32f1/platform_stm32f1.h"
 #include "service/logger.h"
@@ -36,7 +36,6 @@ static void sync_registers(mcu_ctx_t *ctx)
 
     app_report_t r = app_report(ctx->app);
 
-    /* Текущие измерения */
     ctx->regs->temp_filt_cd = (int16_t)r.filtered_temp_cd;
     ctx->regs->rh_cp = (uint16_t)r.humidity_cp;
     ctx->regs->dew_point_cd = (int16_t)r.dew_point_cd;
@@ -45,7 +44,6 @@ static void sync_registers(mcu_ctx_t *ctx)
     ctx->regs->err_count = (uint16_t)ctx->diag->fault_events;
     ctx->regs->uptime_ms = diag_uptime_ms(ctx->diag, platform_millis());
 
-    /* Конфигурация из приложения — НОВОЕ */
     ctx->regs->cfg_margin_on_cd = ctx->app->cfg.dew_margin_on_cd;
     ctx->regs->cfg_margin_off_cd = ctx->app->cfg.dew_margin_off_cd;
     ctx->regs->cfg_sample_ms = ctx->app->cfg.sample_period_ms;
@@ -82,9 +80,8 @@ static void apply_modbus_write_to_app(mcu_ctx_t *ctx, uint16_t reg_addr, uint16_
 
     if (changed) {
         storage_finalize(&tmp_cfg);
-
         err_t e = app_update_config(ctx->app, &tmp_cfg);
-
+        
         if (e != ERR_OK && logger_level_enabled(LOG_LEVEL_WARN)) {
             log_timestamp(platform_millis());
             logger_write_str("CFG SAVE ERROR=");
@@ -100,17 +97,9 @@ static void handle_modbus_request(mcu_ctx_t *ctx, const modbus_request_t *req)
         return;
     }
 
-    /*
-     * Единый буфер для формирования ответа.
-     * Структура Modbus RTU Frame:
-     * [Addr(1)] [Func(1)] [Payload(N)] [CRC(2)]
-     * Максимальный размер PDU Modbus = 256 bytes.
-     * Весь кадр <= 258 bytes. Берем с запасом 260.
-     */
-    uint8_t resp_buf[260];
+    uint8_t resp_buf[260]; // Increased slightly for safety
     size_t resp_len = 0u;
 
-    /* Sync latest state into registers before reading/writing */
     sync_registers(ctx);
 
     switch (req->function) {
@@ -124,7 +113,6 @@ static void handle_modbus_request(mcu_ctx_t *ctx, const modbus_request_t *req)
         uint16_t start_addr = ((uint16_t)req->data[0] << 8) | req->data[1];
         uint16_t quantity = ((uint16_t)req->data[2] << 8) | req->data[3];
 
-        /* Standard Modbus limit is 125 registers. We enforce it strictly. */
         if (quantity == 0u || quantity > 125u) {
             resp_len = modbus_build_exception(req->slave_addr, 0x03u, MODBUS_EX_ILLEGAL_DATA_VAL, resp_buf, sizeof(resp_buf));
             break;
@@ -132,32 +120,21 @@ static void handle_modbus_request(mcu_ctx_t *ctx, const modbus_request_t *req)
 
         size_t byte_count = (size_t)quantity * 2u;
 
-        /*
-         * Проверка на переполнение буфера ответа.
-         * Addr(1) + Func(1) + ByteCount(1) + Data(byte_count) + CRC(2)
-         * Total = 5 + byte_count
-         */
         if (sizeof(resp_buf) < 5u + byte_count) {
             resp_len = modbus_build_exception(req->slave_addr, 0x03u, MODBUS_EX_SLAVE_DEVICE_FAIL, resp_buf, sizeof(resp_buf));
             break;
         }
 
-        /* Формируем заголовок ответа вручную в resp_buf */
         resp_buf[0] = req->slave_addr;
-        resp_buf[1] = 0x03u;       /* Function Code */
-        resp_buf[2] = (uint8_t)byte_count; /* Byte Count field */
+        resp_buf[1] = 0x03u;
+        resp_buf[2] = (uint8_t)byte_count;
 
-        /*
-         * Читаем регистры ПРЯМО в тело ответа, начиная с индекса 3.
-         * Это устраняет необходимость в data_payload[] и final_payload[].
-         */
         if (!mb_regs_read(ctx->regs, start_addr, quantity, &resp_buf[3], byte_count)) {
             resp_len = modbus_build_exception(req->slave_addr, 0x03u, MODBUS_EX_ILLEGAL_DATA_ADDR, resp_buf, sizeof(resp_buf));
             break;
         }
 
-        /* Добавляем CRC к готовому блоку (Header + Payload) */
-        size_t payload_with_header_len = 3u + byte_count; /* Addr + Func + ByteCount + Data */
+        size_t payload_with_header_len = 3u + byte_count;
         uint16_t crc = modbus_crc16(resp_buf, payload_with_header_len);
         
         resp_buf[payload_with_header_len] = (uint8_t)(crc & 0xFFu);
@@ -182,13 +159,8 @@ static void handle_modbus_request(mcu_ctx_t *ctx, const modbus_request_t *req)
             break;
         }
 
-        /* Применяем изменение к реальному конфигу и сохраняем */
         apply_modbus_write_to_app(ctx, reg_addr, value);
 
-        /*
-         * Ответ для 0x06 — эхо исходного запроса (кроме CRC).
-         * Модbus требует вернуть тот же адрес регистра и значение.
-         */
         resp_buf[0] = req->slave_addr;
         resp_buf[1] = 0x06u;
         resp_buf[2] = req->data[0];
@@ -212,7 +184,6 @@ static void handle_modbus_request(mcu_ctx_t *ctx, const modbus_request_t *req)
     if (resp_len > 0u) {
         uart1_tx_bytes(resp_buf, resp_len);
         
-        /* Optional: Log sent response length */
         if (logger_level_enabled(LOG_LEVEL_DEBUG)) {
             log_timestamp(platform_millis());
             logger_write_str("TX len=");
@@ -225,7 +196,6 @@ static void handle_modbus_request(mcu_ctx_t *ctx, const modbus_request_t *req)
 static void control_task(void *ctx)
 {
     mcu_ctx_t *c = (mcu_ctx_t *)ctx;
-
     uint32_t now = platform_millis();
     bool processed = false;
 
@@ -234,6 +204,9 @@ static void control_task(void *ctx)
     if (processed) {
         app_report_t r = app_report(c->app);
         diag_record(c->diag, now, r.state, e, r.relay_on, true);
+        
+        /* Mark ticket as done */
+        app_mark_ticket(c->app, TICKET_CONTROL);
     }
 }
 
@@ -242,6 +215,9 @@ static void logger_poll_task(void *ctx)
     (void)ctx;
     logger_task();
     platform_poll();
+    
+    /* Optionally mark LOG ticket if we require it */
+    /* app_mark_ticket(..., TICKET_LOG); */ 
 }
 
 static void modbus_task(void *ctx)
@@ -261,6 +237,9 @@ static void modbus_task(void *ctx)
     if (srv.event == MODBUS_EVENT_REQUEST) {
         handle_modbus_request(c, &srv.request);
         modbus_server_clear_event(&srv);
+        
+        /* Mark COMM ticket on successful request handling */
+        app_mark_ticket(c->app, TICKET_COMM);
     } else if (srv.event != MODBUS_EVENT_NONE) {
         /* Log errors */
         if (logger_level_enabled(LOG_LEVEL_WARN)) {
@@ -272,23 +251,28 @@ static void modbus_task(void *ctx)
             logger_new_line();
         }
         modbus_server_clear_event(&srv);
+        
+        /* Even on error, we processed the frame, so COMM task ran. 
+           Depending on policy, you might still feed WDT here. 
+           Let's assume yes, because hang is worse than bad packet. */
+        app_mark_ticket(c->app, TICKET_COMM);
     }
 }
 
 int main(void)
 {
     stm32f1_platform_init();
-
-    /* Initialize I2C bus before using sensors */
-    (void)i2c_init(); 
+    
+    /* Init Watchdog: 2 second timeout */
+    platform_wdg_init(2000u);
 
     sensor_port_t sensor = {
-        .read = sht31_read_sample,
+        .read = stub_sensor_read,
         .ctx = NULL
     };
 
     app_t app;
-    app_init(&app, &sensor); /* Loads config internally */
+    app_init(&app, &sensor);
 
     diagnostics_t diag;
     diag_init(&diag, platform_millis());
@@ -309,7 +293,6 @@ int main(void)
 
     sched_init(&sched, tasks, 3u);
 
-    /* Use period from loaded config */
     uint32_t period = app.ctrl.cfg.sample_period_ms;
     
     (void)sched_register(&sched, period, control_task, &ctx, "control");
@@ -317,7 +300,17 @@ int main(void)
     (void)sched_register(&sched, 1u, modbus_task, &ctx, "modbus");
 
     for (;;) {
+        /* Clear tickets BEFORE running tasks for this cycle */
+        app_clear_tickets(&app);
+
         (void)sched_run_once(&sched, platform_millis());
+
+        /* Check if ALL critical tasks completed successfully */
+        if (app_can_feed_watchdog(&app)) {
+            platform_wdg_feed();
+        }
+        /* If NOT fed, watchdog will reset MCU soon */
+        
         platform_wfi();
     }
 

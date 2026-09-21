@@ -1,8 +1,6 @@
 #include "app/app.h"
-
 #include <stddef.h>
 #include <string.h>
-
 #include "platform/platform.h"
 
 void app_init(app_t *app, const sensor_port_t *sensor)
@@ -16,7 +14,6 @@ void app_init(app_t *app, const sensor_port_t *sensor)
     /* Load persisted config or defaults */
     err_t e = storage_load(&app->cfg);
     if (e != ERR_OK) {
-        /* If load failed, ensure we have valid defaults */
         storage_load_defaults(&app->cfg);
     }
 
@@ -34,6 +31,11 @@ void app_init(app_t *app, const sensor_port_t *sensor)
 
     app->next_sample_ms = 0u;
     app->relay_prev = app->ctrl.relay_on;
+
+    /* Init tickets */
+    app->ticket_mask = 0u;
+    /* Require Control and Comm. Log is optional for safety in this example. */
+    app->required_tickets = TICKET_CONTROL | TICKET_COMM; 
 
     platform_relay_set(app->relay_prev);
 }
@@ -121,8 +123,6 @@ err_t app_task(app_t *app, uint32_t now_ms, bool *processed)
         app->relay_prev = relay;
     }
 
-    platform_watchdog_feed();
-
     *processed = true;
     return e;
 }
@@ -148,4 +148,24 @@ app_report_t app_report(const app_t *app)
     r.fault_count = app->ctrl.fault_count;
 
     return r;
+}
+
+bool app_can_feed_watchdog(const app_t *app)
+{
+    if (app == NULL) return false;
+    return (app->ticket_mask & app->required_tickets) == app->required_tickets;
+}
+
+void app_clear_tickets(app_t *app)
+{
+    if (app != NULL) {
+        app->ticket_mask = 0u;
+    }
+}
+
+void app_mark_ticket(app_t *app, uint32_t ticket_id)
+{
+    if (app != NULL) {
+        app->ticket_mask |= ticket_id;
+    }
 }

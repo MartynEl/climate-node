@@ -25,11 +25,6 @@ __attribute__((weak)) void platform_wfi(void)
     /* No-op */
 }
 
-__attribute__((weak)) void platform_watchdog_feed(void)
-{
-    /* No-op */
-}
-
 __attribute__((weak)) void platform_relay_set(bool on)
 {
     (void)on;
@@ -78,4 +73,15 @@ __attribute__((weak)) err_t platform_flash_write_config(
     (void)slot_index;
     (void)cfg;
     return ERR_STORAGE;
+}
+
+__attribute__((weak)) void platform_wdg_init(uint32_t timeout_ms)
+{
+    (void)timeout_ms;
+    /* No-op for host/tests by default */
+}
+
+__attribute__((weak)) void platform_wdg_feed(void)
+{
+    /* No-op for host/tests by default */
 }

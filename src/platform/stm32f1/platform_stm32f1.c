@@ -1,12 +1,11 @@
 #include "platform/stm32f1/platform_stm32f1.h"
 #include "platform/platform.h"
 #include "service/storage.h"
+#include "bsp/stm32f1/uart.h"
+#include "bsp/i2c.h"
 
 #include <stddef.h>
 #include <stdint.h>
-
-#include "bsp/stm32f1/uart.h"
-#include "bsp/i2c.h"
 
 extern volatile uint32_t SystemTicks;
 
@@ -34,6 +33,20 @@ extern volatile uint32_t SystemTicks;
 /* Flash Layout for STM32F103C8T6 (64KB) */
 #define FLASH_CONFIG_A_ADDR 0x0800F800UL
 #define FLASH_CONFIG_B_ADDR 0x0800FC00UL
+
+/* --- IWDG Definitions --- */
+#define IWDG_KR_BASE       0x40003000UL
+#define IWDG_KR            (*(volatile uint32_t *)(IWDG_KR_BASE + 0x00UL))
+#define IWDG_PR            (*(volatile uint32_t *)(IWDG_KR_BASE + 0x04UL))
+#define IWDG_RLR           (*(volatile uint32_t *)(IWDG_KR_BASE + 0x08UL))
+#define IWDG_SR            (*(volatile uint32_t *)(IWDG_KR_BASE + 0x0CUL))
+
+#define IWDG_KR_KEY_START  0xCCCCUL
+#define IWDG_KR_KEY_RELOAD 0xAAAAUL
+#define IWDG_KR_KEY_UNLOCK 0x5555UL
+
+#define IWDG_SR_PVU_BIT    (1UL << 0)
+#define IWDG_SR_RVU_BIT    (1UL << 1)
 
 static bool g_relay_state = false;
 
@@ -65,9 +78,46 @@ void platform_wfi(void)
     __asm volatile("wfi" ::: "memory");
 }
 
-void platform_watchdog_feed(void)
+void platform_wdg_init(uint32_t timeout_ms)
 {
-    /* TODO: IWDG */
+    /* Unlock IWDG registers */
+    IWDG_KR = IWDG_KR_KEY_UNLOCK;
+
+    /* Select Prescaler: PR=4 -> Divider=64 */
+    IWDG_PR = 4u;
+
+    /* Wait for PVU bit to clear */
+    while ((IWDG_SR & IWDG_SR_PVU_BIT) != 0u) {
+        /* Busy wait */
+    }
+
+    /* Calculate Reload Value */
+    /* Ticks = timeout_ms / 1.6 = timeout_ms * 10 / 16 = timeout_ms * 5 / 8 */
+    uint32_t reload_val = (timeout_ms * 5u) / 8u;
+    
+    /* Clamp to valid range [1, 4095] */
+    if (reload_val > 4095u) {
+        reload_val = 4095u;
+    }
+    if (reload_val < 1u) {
+        reload_val = 1u;
+    }
+
+    IWDG_RLR = reload_val;
+
+    /* Wait for RVU bit to clear */
+    while ((IWDG_SR & IWDG_SR_RVU_BIT) != 0u) {
+        /* Busy wait */
+    }
+
+    /* Start IWDG */
+    IWDG_KR = IWDG_KR_KEY_START;
+}
+
+void platform_wdg_feed(void)
+{
+    /* Send reload key */
+    IWDG_KR = IWDG_KR_KEY_RELOAD;
 }
 
 void platform_relay_set(bool on)

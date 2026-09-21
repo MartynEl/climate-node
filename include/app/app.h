@@ -26,15 +26,29 @@ typedef struct {
     controller_t ctrl;
     sensor_port_t sensor;
     device_config_t cfg;
-
     uint32_t next_sample_ms;
     bool relay_prev;
+    
+    /* NEW: Watchdog Tickets */
+    uint32_t ticket_mask;      /* Bitmask of completed tasks */
+    uint32_t required_tickets; /* Mask of tasks that MUST complete */
 } app_t;
+
+/* Task IDs for tickets */
+enum {
+    TICKET_CONTROL = (1u << 0),
+    TICKET_COMM    = (1u << 1), /* Modbus processing */
+    TICKET_LOG     = (1u << 2)  /* Logger flush */
+};
 
 void app_init(app_t *app, const sensor_port_t *sensor);
 
 /* Apply current config to controller */
 void app_apply_config(app_t *app);
+
+bool app_can_feed_watchdog(const app_t *app);
+void app_clear_tickets(app_t *app);
+void app_mark_ticket(app_t *app, uint32_t ticket_id);
 
 err_t app_task(app_t *app, uint32_t now_ms, bool *processed);
 
