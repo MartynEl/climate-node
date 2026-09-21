@@ -52,6 +52,7 @@ add_library(climate_core STATIC
     src/core/controller.c
     src/core/diagnostics.c
     src/core/platform_stubs.c
+    src/core/i2c_stubs.c
     src/service/modbus.c
     src/service/modbus_server.c
     src/service/modbus_regs.c
@@ -136,6 +137,7 @@ if(CLIMATE_BUILD_MCU)
         src/app/app.c
         src/app/scheduler.c
         src/driver/stub_sensor.c
+        src/driver/sensor_sht31.c      # <-- НОВОЕ
         src/platform/stm32f1/platform_stm32f1.c
         src/bsp/stm32f1/startup_stm32f103.c
         src/bsp/stm32f1/uart.c

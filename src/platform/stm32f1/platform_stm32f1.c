@@ -6,6 +6,7 @@
 #include <stdint.h>
 
 #include "bsp/stm32f1/uart.h"
+#include "bsp/i2c.h"
 
 extern volatile uint32_t SystemTicks;
 
@@ -159,4 +160,55 @@ err_t platform_flash_write_config(uint32_t slot_index, const device_config_t *cf
     (void)cfg;
     
     return ERR_OK; 
+}
+
+/* --- I2C Implementation Skeleton for STM32F1 --- */
+
+#include "bsp/i2c.h"
+
+err_t i2c_init(void)
+{
+    /* TODO: Enable RCC_APB1ENR_I2C1EN, configure PB6/PB7 GPIO AF_OD */
+    return ERR_OK;
+}
+
+err_t i2c_mem_write(
+    uint8_t dev_addr,
+    uint8_t reg_addr,
+    const uint8_t *data,
+    size_t len)
+{
+    (void)dev_addr;
+    (void)reg_addr;
+    (void)data;
+    (void)len;
+    /* TODO: Implement HAL_I2C_Master_Transmit or LL equivalent */
+    return ERR_OK;
+}
+
+err_t i2c_mem_read(
+    uint8_t dev_addr,
+    uint8_t reg_addr,
+    uint8_t *data,
+    size_t len)
+{
+    (void)dev_addr;
+    (void)reg_addr;
+    
+    /* Return dummy valid-looking data for build verification */
+    if (len >= 6 && data != NULL) {
+        /* Simulate ~22.5C and 65% RH roughly encoded */
+        /* ST=41943 -> T=-45+175*41943/65535 ≈ 22.5C */
+        data[0] = 0xA3; /* High byte approx */
+        data[1] = 0x7B; /* Low byte approx */
+        data[2] = 0xBE; /* Fake CRC */
+        
+        /* SRH=42598 -> RH=100*42598/65535 ≈ 65% */
+        data[3] = 0xA6; 
+        data[4] = 0xC6;
+        data[5] = 0xEF; /* Fake CRC */
+    }
+    
+    /* TODO: Implement HAL_I2C_Master_Receive */
+    return ERR_OK;
 }

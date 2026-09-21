@@ -5,8 +5,9 @@
 #include "app/app.h"
 #include "app/scheduler.h"
 #include "bsp/stm32f1/uart.h"
+#include "bsp/i2c.h"
 #include "core/diagnostics.h"
-#include "driver/stub_sensor.h"
+#include "driver/sensor_sht31.h"
 #include "platform/platform.h"
 #include "platform/stm32f1/platform_stm32f1.h"
 #include "service/logger.h"
@@ -278,8 +279,11 @@ int main(void)
 {
     stm32f1_platform_init();
 
+    /* Initialize I2C bus before using sensors */
+    (void)i2c_init(); 
+
     sensor_port_t sensor = {
-        .read = stub_sensor_read,
+        .read = sht31_read_sample,
         .ctx = NULL
     };
 

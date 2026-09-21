@@ -185,3 +185,29 @@ if(CLIMATE_WERROR)
 endif()
 
 add_test(NAME storage COMMAND test_storage)
+
+add_executable(test_sensor_sht31
+    test_sensor_sht31.c
+    ${CMAKE_SOURCE_DIR}/src/driver/sensor_sht31.c
+)
+
+target_link_libraries(test_sensor_sht31 PRIVATE climate_core)
+
+target_include_directories(test_sensor_sht31 PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
+target_compile_options(test_sensor_sht31 PRIVATE
+    -Wall
+    -Wextra
+    -Wpedantic
+    -Wshadow
+    -Wdouble-promotion
+    -Wformat=2
+)
+
+if(CLIMATE_WERROR)
+    target_compile_options(test_sensor_sht31 PRIVATE -Werror)
+endif()
+
+add_test(NAME sensor_sht31 COMMAND test_sensor_sht31)
