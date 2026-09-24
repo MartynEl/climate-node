@@ -48,24 +48,42 @@ extern volatile uint32_t SystemTicks;
 #define IWDG_SR_PVU_BIT    (1UL << 0)
 #define IWDG_SR_RVU_BIT    (1UL << 1)
 
+/* --- RS-485 DE/RE Pin Definitions (using PB0) --- */
+#define RCC_APB2ENR_IOPBEN   (1UL << 3)
+#define GPIOB_BASE           0x40010C00UL
+#define GPIOB_CRL            (*(volatile uint32_t *)(GPIOB_BASE + 0x00UL))
+#define GPIOB_BSRR           (*(volatile uint32_t *)(GPIOB_BASE + 0x0CUL))
+#define GPIOB_BRR            (*(volatile uint32_t *)(GPIOB_BASE + 0x10UL))
+
 static bool g_relay_state = false;
 
 void stm32f1_platform_init(void)
 {
-    RCC_APB2ENR |= RCC_APB2ENR_IOPCEN;
+    RCC_APB2ENR |= RCC_APB2ENR_IOPCEN | RCC_APB2ENR_IOPBEN;
 
     uint32_t crh = GPIOC_CRH;
     crh &= ~(0xFUL << 20);
     crh |= (0x2UL << 20);
     GPIOC_CRH = crh;
-
     GPIOC_BSRR = (1UL << 13);
 
+    uint32_t crl = GPIOB_CRL;
+    crl &= ~(0xFUL << 0);      // Очищаем биты CNF/MODE для PB0 (позиция 0..3)
+    crl |= (0x1UL << 0);       // MODE=01 (10 МГц), CNF=00 (General Purpose Output PP)
+    GPIOB_CRL = crl;
+    
+    // Начальное состояние: LOW (режим приёма RE активен, TX отключён)
+    GPIOB_BRR = (1UL << 0);    // Сбрасываем PB0 в ноль через BRR
+
+    /* SysTick для миллисекундного тика */
     SYSTICK_LOAD = SYSTICK_RELOAD_1MS;
     SYSTICK_VAL = 0u;
     SYSTICK_CTRL = SYSTICK_CTRL_CLKSOURCE | SYSTICK_CTRL_TICKINT | SYSTICK_CTRL_ENABLE;
 
     uart1_init();
+
+    /* Сообщаем драйверу UART, какой пин использовать для RS-485 */
+    uart1_set_rs485_pin(GPIOB_BASE, 0); // Порт B, пин номер 0
 }
 
 uint32_t platform_millis(void)
