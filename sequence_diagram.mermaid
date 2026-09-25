@@ -1,0 +1,95 @@
+stateDiagram-v2
+    [*] --> INIT: power_on / reset
+    
+    state INIT {
+        [*] --> CheckConfig
+        CheckConfig --> LoadDefaults: storage_load failed
+        CheckConfig --> ApplySaved: storage_load success
+        LoadDefaults --> ReadyToStart
+        ApplySaved --> ReadyToStart
+    }
+
+    INIT --> WARMUP: ctrl_init() called
+    
+    state WARMUP {
+        [*] --> AccumulateSamples
+        AccumulateSamples --> CountCheck: ma_update(temp)
+        CountCheck --> AccumulateSamples: count < 5
+        CountCheck --> FilterReady: count >= 5
+    }
+
+    WARMUP --> RUN: filter_ready && sensor_valid
+    
+    WARMUP --> SENSOR_FAULT: invalid_sample_count >= threshold
+
+    state RUN {
+        [*] --> ReadSensor
+        ReadSensor --> ValidateSample: sample_t obtained
+        
+        state ValidateSample {
+            [*] --> QualityCheck
+            QualityCheck --> ErrorStreak++: quality != VALID
+            QualityCheck --> RangeCheck: quality == VALID
+            RangeCheck --> ResetErrorStreak: temp/rh in range
+            RangeCheck --> ErrorStreak++: out_of_range
+        }
+
+        ValidateSample --> UpdateFilter: valid_data
+        ValidateSample --> HandleFault: error_detected
+
+        state UpdateFilter {
+            [*] --> CalcMA
+            CalcMA --> CalcDewPoint: filtered_temp ready
+        }
+
+        UpdateFilter --> ControlLogic: dew_point calculated
+        
+        state ControlLogic {
+            [*] --> CalculateMargin
+            CalculateMargin --> CompareThresholds: margin = T_filt - DewPt
+            
+            CompareThresholds --> TurnOnRelay: relay_OFF && margin < ON_THRESH
+            CompareThresholds --> KeepOff: relay_OFF && margin >= ON_THRESH
+            CompareThresholds --> TurnOffRelay: relay_ON && margin > OFF_THRESH
+            CompareThresholds --> KeepOn: relay_ON && margin <= OFF_THRESH
+        }
+
+        ControlLogic --> NextCycle: relay_state_updated
+        
+        state HandleFault {
+            [*] --> IncrementCounter
+            IncrementCounter --> ThresholdCheck: streak++
+            
+            ThresholdCheck --> StayInRun: streak < FAULT_THRESHOLD
+            ThresholdCheck --> TransitionToFault: streak >= FAULT_THRESHOLD
+        }
+        
+        HandleFault --> SENSOR_FAULT: transition_triggered
+        HandleFault --> RUN: stay_in_run
+    }
+
+    RUN --> SENSOR_FAULT: persistent_sensor_error
+    
+    state SENSOR_FAULT {
+        [*] --> SetSafeState
+        SetSafeState --> MonitorRecovery: relay = SAFE_STATE (OFF)
+        
+        MonitorRecovery --> RecoveryStreak++: new_valid_sample_received
+        RecoveryStreak --> CheckRecoveryThreshold
+        
+        CheckRecoveryThreshold --> StayInFault: streak < RECOVERY_THRESHOLD
+        CheckRecoveryThreshold --> TransitionToRun: streak >= RECOVERY_THRESHOLD
+    }
+
+    SENSOR_FAULT --> RUN: recovery_confirmed
+    
+    note right of SENSOR_FAULT
+        Устройство продолжает опрашивать датчик,
+        но игнорирует результаты управления,
+        пока не убедится, что связь восстановлена.
+    end note
+
+    RUN --> MATH_FAULT: division_by_zero_or_overflow
+    MATH_FAULT --> SAFE_MODE: critical_calculation_error
+    
+    SAFE_MODE --> [*]: system_reset_required

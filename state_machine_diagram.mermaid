@@ -1,0 +1,90 @@
+stateDiagram-v2
+    [*] --> INIT: Power On / Reset
+    
+    state "INIT" as Init {
+        [*] --> LoadConfig
+        LoadConfig --> Defaults: storage_load failed
+        LoadConfig --> Saved: storage_load success
+        Defaults --> Ready
+        Saved --> Ready
+    }
+
+    INIT --> WARMUP: ctrl_init() called
+    
+    state "WARMUP" as Warmup {
+        [*] --> AccumulateSamples
+        AccumulateSamples --> CheckCount: ma_update(temp)
+        CheckCount --> AccumulateSamples: count < 5
+        CheckCount --> FilterReady: count >= 5
+    }
+
+    WARMUP --> RUN: filter_ready AND sensor_valid
+    
+    WARMUP --> SENSOR_FAULT: invalid_sample_count >= threshold
+
+    state "RUN" as Run {
+        [*] --> ReadSensor
+        ReadSensor --> ValidateData
+        
+        state ValidateData {
+            [*] --> QualityCheck
+            QualityCheck --> ErrorStreakInc: quality != VALID
+            QualityCheck --> RangeCheck: quality == VALID
+            RangeCheck --> OkStreakReset: temp/rh in range
+            RangeCheck --> ErrorStreakInc: out_of_range
+        }
+
+        ValidateData --> UpdateLogic: valid_data
+        ValidateData --> HandleFault: error_detected
+
+        state UpdateLogic {
+            [*] --> CalcMA
+            CalcMA --> CalcDewPoint: filtered_temp ready
+            CalcDewPoint --> CompareMargins
+        }
+
+        UpdateLogic --> NextCycle: relay_state_updated
+        
+        state HandleFault {
+            [*] --> IncCounter
+            IncCounter --> ThresholdCheck
+            
+            state ThresholdCheck {
+                [*] --> StayInRun
+                [*] --> TransitionToFault
+            }
+        }
+        
+        HandleFault --> SENSOR_FAULT: transition_triggered
+        HandleFault --> RUN: stay_in_run
+    }
+
+    RUN --> SENSOR_FAULT: persistent_sensor_error
+    
+    state "SENSOR_FAULT" as SensorFault {
+        [*] --> SetSafeState
+        SetSafeState --> MonitorRecovery
+        
+        state MonitorRecovery {
+            [*] --> IncOkStreak
+            IncOkStreak --> RecoveryThresholdCheck
+            
+            state RecoveryThresholdCheck {
+                [*] --> StayInFault
+                [*] --> TransitionToRun
+            }
+        }
+    }
+
+    SENSOR_FAULT --> RUN: recovery_confirmed
+    
+    note right of SENSOR_FAULT
+        Устройство продолжает опрашивать датчик,
+        но игнорирует результаты управления,
+        пока не убедится, что связь восстановлена.
+    end note
+
+    RUN --> MATH_FAULT: division_by_zero_or_overflow
+    MATH_FAULT --> SAFE_MODE: critical_calculation_error
+    
+    SAFE_MODE --> [*]: system_reset_required
