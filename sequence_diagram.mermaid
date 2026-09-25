@@ -1,95 +1,91 @@
-stateDiagram-v2
-    [*] --> INIT: power_on / reset
-    
-    state INIT {
-        [*] --> CheckConfig
-        CheckConfig --> LoadDefaults: storage_load failed
-        CheckConfig --> ApplySaved: storage_load success
-        LoadDefaults --> ReadyToStart
-        ApplySaved --> ReadyToStart
-    }
+sequenceDiagram
+    participant Master as PLC / SCADA<br>(Modbus Master)
+    participant Bus as Шина RS-485<br>(Дифференциальные сигналы A/B)
+    participant Transceiver as Чип MAX3485<br>(Трансивер)
+    participant GPIO as Пин DE/RE<br>(Управление направлением)
+    participant UART as USART1<br>(Периферия STM32)
+    participant ISR as Прерывание RX<br>(USART1_IRQHandler)
+    participant Sched as Scheduler<br>(modbus_task)
+    participant App as Application Layer<br>(app.c / controller.c)
+    participant Regs as Modbus Register Map<br>(modbus_regs.c)
 
-    INIT --> WARMUP: ctrl_init() called
-    
-    state WARMUP {
-        [*] --> AccumulateSamples
-        AccumulateSamples --> CountCheck: ma_update(temp)
-        CountCheck --> AccumulateSamples: count < 5
-        CountCheck --> FilterReady: count >= 5
-    }
+    Note over Master, Regs: Фаза 1: Прием запроса (RX)
 
-    WARMUP --> RUN: filter_ready && sensor_valid
+    Master->>Bus: Отправляет кадр:<br>[Addr][Func][Data...][CRC]
+    activate Bus
     
-    WARMUP --> SENSOR_FAULT: invalid_sample_count >= threshold
+    Bus->>Transceiver: Дифференциальный сигнал<br>(A-B > +200mV или < -200mV)
+    
+    Note right of Transceiver: Режим RE=Low (Прием)<br>DE=High (Выключен передатчик)<br>*Важно: STM32 держит DE в LOW!*
+    
+    Transceiver->>UART: TTL уровень (0/3.3V)<br>на пине PA10 (RX)
+    deactivate Bus
 
-    state RUN {
-        [*] --> ReadSensor
-        ReadSensor --> ValidateSample: sample_t obtained
+    UART->>ISR: Флаг RXNE установлен<br>(Receive Not Empty)
+    activate ISR
+    
+    ISR->>ISR: Читает байт из DR<br>Кладет в Ring Buffer (RAM)
+    ISR-->>UART: Выход из прерывания
+    deactivate ISR
+
+    Note over Master, Regs: Пауза тишины (Inter-frame Silence ~5ms)
+
+    Note over Master, Regs: Фаза 2: Обработка (Processing)
+
+    loop Каждые 1 мс (период modbus_task)
+        Sched->>UART: Вызывает uart1_rx_pop()
+        activate Sched
         
-        state ValidateSample {
-            [*] --> QualityCheck
-            QualityCheck --> ErrorStreak++: quality != VALID
-            QualityCheck --> RangeCheck: quality == VALID
-            RangeCheck --> ResetErrorStreak: temp/rh in range
-            RangeCheck --> ErrorStreak++: out_of_range
-        }
-
-        ValidateSample --> UpdateFilter: valid_data
-        ValidateSample --> HandleFault: error_detected
-
-        state UpdateFilter {
-            [*] --> CalcMA
-            CalcMA --> CalcDewPoint: filtered_temp ready
-        }
-
-        UpdateFilter --> ControlLogic: dew_point calculated
-        
-        state ControlLogic {
-            [*] --> CalculateMargin
-            CalculateMargin --> CompareThresholds: margin = T_filt - DewPt
+        alt Буфер пуст
+            UART-->>Sched: false
+        else Есть данные
+            UART-->>Sched: true, byte
             
-            CompareThresholds --> TurnOnRelay: relay_OFF && margin < ON_THRESH
-            CompareThresholds --> KeepOff: relay_OFF && margin >= ON_THRESH
-            CompareThresholds --> TurnOffRelay: relay_ON && margin > OFF_THRESH
-            CompareThresholds --> KeepOn: relay_ON && margin <= OFF_THRESH
-        }
-
-        ControlLogic --> NextCycle: relay_state_updated
-        
-        state HandleFault {
-            [*] --> IncrementCounter
-            IncrementCounter --> ThresholdCheck: streak++
+            Note right of Sched: Накопление байтов в buf[]<br>Проверка таймаута тишины
             
-            ThresholdCheck --> StayInRun: streak < FAULT_THRESHOLD
-            ThresholdCheck --> TransitionToFault: streak >= FAULT_THRESHOLD
-        }
-        
-        HandleFault --> SENSOR_FAULT: transition_triggered
-        HandleFault --> RUN: stay_in_run
-    }
+            opt Кадр собран полностью?
+                Sched->>Regs: Парсинг кадра<br>(modbus_parse_request)
+                
+                alt CRC неверный / Адрес чужой
+                    Regs-->>Sched: Ошибка
+                    Sched->>App: Логирование ошибки
+                else Запрос валиден
+                    Regs-->>Sched: OK, request_t
+                    
+                    Note right of Sched: Синхронизация данных!<br>sync_registers(ctx)
+                    
+                    Sched->>App: app_report() -> Текущие T/RH/Dew
+                    App-->>Sched: Структура report_t
+                    
+                    Sched->>Regs: Копирует значения<br>в holding registers
+                    
+                    Note right of Sched: Формирование ответа
+                    
+                    Regs-->>Sched: Ответ [Addr][Func][ByteCount][Data...][CRC]
+                    
+                    Sched->>GPIO: Переключение в TX!<br>Write PB0 = HIGH (DE=1)
+                    activate GPIO
+                    
+                    Note right of GPIO: Передатчик активен.<br>Приемник отключен.<br>Шина занята нашим узлом.
+                    
+                    Sched->>UART: uart1_tx_bytes(response)
+                    deactivate GPIO
+                    
+                    UART->>Transceiver: Байты на TX (PA9)
+                    Transceiver->>Bus: Преобразование в дифф. сигнал
+                    deactivate Sched
+                end
+            end
+        end
+    end
 
-    RUN --> SENSOR_FAULT: persistent_sensor_error
-    
-    state SENSOR_FAULT {
-        [*] --> SetSafeState
-        SetSafeState --> MonitorRecovery: relay = SAFE_STATE (OFF)
-        
-        MonitorRecovery --> RecoveryStreak++: new_valid_sample_received
-        RecoveryStreak --> CheckRecoveryThreshold
-        
-        CheckRecoveryThreshold --> StayInFault: streak < RECOVERY_THRESHOLD
-        CheckRecoveryThreshold --> TransitionToRun: streak >= RECOVERY_THRESHOLD
-    }
+    Note over Master, Regs: Фаза 3: Возврат к приему (Idle)
 
-    SENSOR_FAULT --> RUN: recovery_confirmed
+    UART->>UART: Последний байт ушел?<br>(Флаг TC - Transmission Complete)
     
-    note right of SENSOR_FAULT
-        Устройство продолжает опрашивать датчик,
-        но игнорирует результаты управления,
-        пока не убедится, что связь восстановлена.
-    end note
-
-    RUN --> MATH_FAULT: division_by_zero_or_overflow
-    MATH_FAULT --> SAFE_MODE: critical_calculation_error
-    
-    SAFE_MODE --> [*]: system_reset_required
+    opt Если TC == 1
+        UART->>GPIO: Переключение в RX!<br>Write PB0 = LOW (DE=0)
+        activate GPIO
+        Note right of GPIO: Снова слушаем шину.<br>Готовы к следующему запросу.
+        deactivate GPIO
+    end
