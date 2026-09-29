@@ -1,0 +1,45 @@
+sequenceDiagram
+    participant Phys as Физический Мир<br>(SHT31 Sensor)
+    participant HW as Железо STM32<br>(I2C Peripheral)
+    participant ISR as Прерывание I2C<br>(или Polling)
+    participant Core as Ядро Логики<br>(controller.c)
+    participant Mem as Оперативная Память<br>(RAM: modbus_reg_map_t)
+    participant Bus as Шина RS-485<br>(MAX3485)
+    participant Ext as Внешний Мир<br>(Modbus Master / PLC)
+
+    Note over Phys, Ext: Фаза 1: Сбор данных (Internal -> External View)
+
+    Phys->>HW: Изменяет напряжение<br>(Сырые ADC/I2C значения)
+    
+    rect rgb(240, 248, 255)
+        note right of HW: Опрос датчика<br>(Раз в секунду)
+        HW->>ISR: Данные готовы
+        ISR->>Core: sample_t {temp=2250, rh=6500}
+        
+        Core->>Core: ma_update() -> Фильтрация
+        Core->>Core: dewpoint_calc() -> Расчет точки росы
+        
+        note right of Core: Результат расчета:<br>dew_point = 1560
+        
+        Core->>Mem: sync_registers()<br>Записывает 1560 в regs->dew_point_cd
+    end
+
+    Note over Phys, Ext: Фаза 2: Запрос внешнего мира (External Request)
+
+    Ext->>Bus: Кадр Modbus:<br>"Читай регистр 0x0002"<br>(Addr=01, Func=03...)
+    
+    Bus->>HW: UART RX Interrupt
+    HW->>ISR: Байты приняты
+    
+    rect rgb(255, 240, 240)
+        note left of ISR: Парсинг кадра<br>Проверка CRC<br>Проверка адреса
+        
+        ISR->>Mem: mb_regs_read(start=0x0002)<br>Берет значение из RAM
+        Mem-->>ISR: value = 1560
+        
+        ISR->>Bus: Формирует ответ:<br>[01][03][02][06][18][CRC]
+    end
+
+    Bus->>Ext: Ответ по шине RS-485
+    
+    Note over Ext: Мастер получает:<br>"Точка росы 15.60°C"
