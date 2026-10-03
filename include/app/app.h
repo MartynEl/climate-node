@@ -36,9 +36,9 @@ typedef struct {
 
 /* Task IDs for tickets */
 enum {
-    TICKET_CONTROL = (1u << 0),
-    TICKET_COMM    = (1u << 1), /* Modbus processing */
-    TICKET_LOG     = (1u << 2)  /* Logger flush */
+    TICKET_CONTROL = (1UL << 0),
+    TICKET_COMM    = (1UL << 1), /* Modbus processing */
+    TICKET_LOG     = (1UL << 2)  /* Logger flush */
 };
 
 void app_init(app_t *app, const sensor_port_t *sensor);

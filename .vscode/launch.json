@@ -1,0 +1,22 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "STM32F103 Hardware Debug (ST-LINK)",
+            "type": "cortex-debug",
+            "request": "launch",
+            "servertype": "openocd",
+            "executable": "${workspaceFolder}/build-mcu/climate_fw.elf",
+            "cwd": "${workspaceFolder}",
+            "gdbPath": "/usr/bin/gdb-multiarch",
+            "armToolchainPath": "/usr/bin",
+            "interface": "swd",
+            "configFiles": [
+                "interface/stlink.cfg",
+                "target/stm32f1x.cfg"
+            ],
+            "runToEntryPoint": "main",
+            "showDevDebugOutput": "raw"
+        }
+    ]
+}

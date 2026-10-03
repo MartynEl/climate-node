@@ -42,4 +42,15 @@ typedef struct {
     quality_t quality;
 } sample_t;
 
+/**
+ * Перечисление причин последнего сброса процессора.
+ */
+typedef enum {
+    RESET_CAUSE_POWER_ON,    // Штатное включение питания (POR/PDR)
+    RESET_CAUSE_WATCHDOG,    // Аварийный сброс по зависанию (IWDG)
+    RESET_CAUSE_SOFTWARE,    // Программный перезапуск (NVIC_SystemReset)
+    RESET_CAUSE_EXTERNAL,    // Нажатие физической кнопки Reset (NRST)
+    RESET_CAUSE_UNKNOWN      // Не удалось определить
+} reset_cause_t;
+
 #endif // CORE_TYPES_H

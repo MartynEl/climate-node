@@ -182,7 +182,7 @@ static void handle_modbus_request(mcu_ctx_t *ctx, const modbus_request_t *req)
     }
 
     if (resp_len > 0u) {
-        uart1_tx_bytes(resp_buf, resp_len);
+        (void)uart1_tx_dma_async(resp_buf, resp_len);
         
         if (logger_level_enabled(LOG_LEVEL_DEBUG)) {
             log_timestamp(platform_millis());
@@ -220,6 +220,8 @@ static void logger_poll_task(void *ctx)
     /* app_mark_ticket(..., TICKET_LOG); */ 
 }
 
+extern void modbus_uart_event_callback(const uint8_t *data, size_t len, uart_event_t event);
+
 static void modbus_task(void *ctx)
 {
     mcu_ctx_t *c = (mcu_ctx_t *)ctx;
@@ -227,34 +229,31 @@ static void modbus_task(void *ctx)
     static bool initialized = false;
 
     if (!initialized) {
-        modbus_server_init(&srv, 1u, 5u, uart1_rx_pop, NULL);
+        // Переводим сервер на асинхронные рельсы. 
+        // Вместо старого uart1_rx_pop передаем NULL, так как опрос байт больше не нужен
+        modbus_server_init(&srv, 1u, 5u, NULL, NULL);
+        
+        // Регистрируем наш Modbus-коллбэк в драйвере UART/DMA
+        uart1_async_init(modbus_uart_event_callback);
         initialized = true;
     }
 
     uint32_t now = platform_millis();
+    
+    // Вызываем мост совместимости для обработки флагов событий (если они есть)
     (void)modbus_server_task(&srv, now);
 
     if (srv.event == MODBUS_EVENT_REQUEST) {
+        // Если прилетел валидный пакет, обрабатываем его
         handle_modbus_request(c, &srv.request);
         modbus_server_clear_event(&srv);
-        
-        /* Mark COMM ticket on successful request handling */
         app_mark_ticket(c->app, TICKET_COMM);
     } else if (srv.event != MODBUS_EVENT_NONE) {
-        /* Log errors */
-        if (logger_level_enabled(LOG_LEVEL_WARN)) {
-            log_timestamp(now);
-            logger_write_str("RX ERR event=");
-            logger_write_str(modbus_event_str(srv.event));
-            logger_write_str(" parse=");
-            logger_write_str(modbus_parse_err_str(srv.parse_error));
-            logger_new_line();
-        }
+        // Обработка ошибок Modbus
         modbus_server_clear_event(&srv);
-        
-        /* Even on error, we processed the frame, so COMM task ran. 
-           Depending on policy, you might still feed WDT here. 
-           Let's assume yes, because hang is worse than bad packet. */
+        app_mark_ticket(c->app, TICKET_COMM);
+    } else {
+        /* В штатном режиме DMA ничего не происходит, просто пинаем тикет */
         app_mark_ticket(c->app, TICKET_COMM);
     }
 }
@@ -263,6 +262,9 @@ int main(void)
 {
     stm32f1_platform_init();
     
+    // Читаем аппаратную причину сброса процессора ДО инициализации ядра
+    reset_cause_t cause = platform_reset_cause_get();
+
     /* Init Watchdog: 2 second timeout */
     platform_wdg_init(2000u);
 
@@ -273,6 +275,9 @@ int main(void)
 
     app_t app;
     app_init(&app, &sensor);
+
+    // СЕРИЙНАЯ ЗАЩИТА: Инициализируем FSM ядра с учетом причины аварии (Fault Isolation)
+    ctrl_init_extended(&app.ctrl, &CONTROLLER_DEFAULTS, cause);
 
     diagnostics_t diag;
     diag_init(&diag, platform_millis());
@@ -315,4 +320,11 @@ int main(void)
     }
 
     return 0;
+}
+
+void modbus_server_on_request_ready(const modbus_request_t *req)
+{
+    (void)req; 
+    // Данная функция-событие вызывается асинхронно из прерывания при готовности кадра.
+    // Наша архитектура подхватит этот запрос на следующем шаге планировщика в modbus_task.
 }

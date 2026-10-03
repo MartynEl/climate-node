@@ -3,20 +3,31 @@
 #include "service/storage.h"
 #include "bsp/stm32f1/uart.h"
 #include "bsp/i2c.h"
+#include "core/controller.h"
 
 #include <stddef.h>
 #include <stdint.h>
 
 extern volatile uint32_t SystemTicks;
 
-#define RCC_BASE            0x40021000UL
-#define RCC_APB2ENR         (*(volatile uint32_t *)(RCC_BASE + 0x18UL))
+/* --- Аппаратные адреса регистров STM32F103 --- */
+#define RCC_BASE             0x40021000UL
+#define RCC_APB1ENR          (*(volatile uint32_t *)(RCC_BASE + 0x1運行))
+#define RCC_APB2ENR          (*(volatile uint32_t *)(RCC_BASE + 0x18UL))
+#define RCC_CSR              (*(volatile uint32_t *)(RCC_BASE + 0x24UL))
+
 #define RCC_APB2ENR_IOPCEN  (1UL << 4)
+#define RCC_APB2ENR_IOPBEN  (1UL << 3)
 
 #define GPIOC_BASE          0x40011000UL
 #define GPIOC_CRH           (*(volatile uint32_t *)(GPIOC_BASE + 0x04UL))
 #define GPIOC_BSRR          (*(volatile uint32_t *)(GPIOC_BASE + 0x0CUL))
 #define GPIOC_BRR           (*(volatile uint32_t *)(GPIOC_BASE + 0x10UL))
+
+#define GPIOB_BASE           0x40010C00UL
+#define GPIOB_CRL            (*(volatile uint32_t *)(GPIOB_BASE + 0x00UL))
+#define GPIOB_BSRR           (*(volatile uint32_t *)(GPIOB_BASE + 0x0CUL))
+#define GPIOB_BRR           (*(volatile uint32_t *)(GPIOB_BASE + 0x10UL))
 
 #define SYSTICK_BASE        0xE000E010UL
 #define SYSTICK_CTRL        (*(volatile uint32_t *)(SYSTICK_BASE + 0x00UL))
@@ -30,11 +41,23 @@ extern volatile uint32_t SystemTicks;
 #define PLATFORM_CLOCK_HZ 8000000UL
 #define SYSTICK_RELOAD_1MS ((PLATFORM_CLOCK_HZ / 1000UL) - 1UL)
 
-/* Flash Layout for STM32F103C8T6 (64KB) */
+/* Конфигурация секторов Flash (64KB) */
 #define FLASH_CONFIG_A_ADDR 0x0800F800UL
 #define FLASH_CONFIG_B_ADDR 0x0800FC00UL
 
-/* --- IWDG Definitions --- */
+/* --- Регистры управления питанием PWR и BKP --- */
+#define PWR_BASE             0x40007000UL
+#define PWR_CR               (*(volatile uint32_t *)(PWR_BASE + 0x00UL))
+#define PWR_CR_PVDE          (1UL << 4)  // PVD Enable
+#define PWR_CR_PLS_2V9       (5UL << 5)  // Порог детекции Brown-out = 2.9 В
+
+#define BKP_BASE             0x40006C00UL
+#define BKP_DR1              (*(volatile uint32_t *)(BKP_BASE + 0x04UL))
+
+#define NVIC_ISER0           (*(volatile uint32_t *)0xE000E100UL)
+#define PVD_IRQ_BIT          (1UL << 1)  // PVD — вектор прерывания 1 в NVIC
+
+/* --- Регистры сторожевого таймера IWDG --- */
 #define IWDG_KR_BASE       0x40003000UL
 #define IWDG_KR            (*(volatile uint32_t *)(IWDG_KR_BASE + 0x00UL))
 #define IWDG_PR            (*(volatile uint32_t *)(IWDG_KR_BASE + 0x04UL))
@@ -48,42 +71,116 @@ extern volatile uint32_t SystemTicks;
 #define IWDG_SR_PVU_BIT    (1UL << 0)
 #define IWDG_SR_RVU_BIT    (1UL << 1)
 
-/* --- RS-485 DE/RE Pin Definitions (using PB0) --- */
-#define RCC_APB2ENR_IOPBEN   (1UL << 3)
-#define GPIOB_BASE           0x40010C00UL
-#define GPIOB_CRL            (*(volatile uint32_t *)(GPIOB_BASE + 0x00UL))
-#define GPIOB_BSRR           (*(volatile uint32_t *)(GPIOB_BASE + 0x0CUL))
-#define GPIOB_BRR            (*(volatile uint32_t *)(GPIOB_BASE + 0x10UL))
-
+extern controller_t g_app_controller; // Ссылка на FSM ядра из main_mcu.c
 static bool g_relay_state = false;
 
+/**
+ * Чтение причины аппаратного сброса
+ */
+reset_cause_t platform_reset_cause_get(void)
+{
+    uint32_t csr = RCC_CSR;
+
+    // Сбрасываем флаги RCC для следующего цикла работы девайса
+    RCC_CSR |= (1UL << 24); // RMVF: Remove Reset Flags
+
+    if ((csr & (1UL << 29)) != 0u) return RESET_CAUSE_WATCHDOG;  // IWDGRSTF
+    if ((csr & (1UL << 28)) != 0u) return RESET_CAUSE_SOFTWARE;  // SFTRSTF
+    if ((csr & (1UL << 26)) != 0u) return RESET_CAUSE_EXTERNAL;  // PINRSTF
+    if ((csr & (1UL << 27)) != 0u) return RESET_CAUSE_POWER_ON;  // PORRSTF
+
+    return RESET_CAUSE_UNKNOWN;
+}
+
+/**
+ * Инициализация аппаратного детектора Brown-out (PVD)
+ */
+void platform_pvd_init(void)
+{
+    // Включаем тактирование PWR и бэкап-домена BKP в APB1
+    *(volatile uint32_t *)(0x40021000UL + 0x1CUL) |= (1UL << 28) | (1UL << 27);
+    
+    // Задаем порог 2.9V и активируем внутренний компаратор питания
+    PWR_CR = PWR_CR_PLS_2V9 | PWR_CR_PVDE;
+
+    // Конфигурируем линию EXTI 16 (внутренний триггер прерывания PVD)
+    *(volatile uint32_t *)0x40010400UL |= (1UL << 16); // EXTI_IMR
+    *(volatile uint32_t *)0x40010408UL |= (1UL << 16); // EXTI_RTSR: сработка по падению напряжения
+
+    NVIC_ISER0 |= PVD_IRQ_BIT; // Активируем прерывание в NVIC
+}
+
+/**
+ * Сохранение статуса в Backup RAM (сверхбыстрая регистровая запись)
+ */
+void platform_emergency_backup_save(const void *data, size_t len)
+{
+    if (data == NULL || len == 0) return;
+    
+    // Разрешаем запись в Backup область (бит DBP в PWR_CR)
+    PWR_CR |= (1UL << 8); 
+
+    uint8_t *byte_ptr = (uint8_t *)data;
+    BKP_DR1 = (uint32_t)(*byte_ptr);
+}
+
+/**
+ * Восстановление бэкапа аварий при старте прошивки
+ */
+bool platform_emergency_backup_load(void *out_data, size_t len)
+{
+    if (out_data == NULL || len == 0) return false;
+    
+    uint8_t *byte_ptr = (uint8_t *)out_data;
+    *byte_ptr = (uint8_t)(BKP_DR1 & 0xFFu);
+    return true;
+}
+
+/**
+ * ИСР: Высокоприоритетный аварийный прерывание детектора Brown-out
+ */
+void PVD_IRQHandler(void)
+{
+    // Экстренная остановка логики и сброс силовых реле
+    ctrl_force_emergency_shutdown(&g_app_controller);
+
+    // Сброс флага линии EXTI
+    *(volatile uint32_t *)0x40010414UL = (1UL << 16); // EXTI_PR
+}
+
+/**
+ * Полный запуск и конфигурирование платформы STM32F1
+ */
 void stm32f1_platform_init(void)
 {
     RCC_APB2ENR |= RCC_APB2ENR_IOPCEN | RCC_APB2ENR_IOPBEN;
 
+    // PC13 — Выход общего назначения (Встроенный LED)
     uint32_t crh = GPIOC_CRH;
     crh &= ~(0xFUL << 20);
     crh |= (0x2UL << 20);
     GPIOC_CRH = crh;
     GPIOC_BSRR = (1UL << 13);
 
+    // PB0 — Настройка направления RS-485 DE/RE
     uint32_t crl = GPIOB_CRL;
-    crl &= ~(0xFUL << 0);      // Очищаем биты CNF/MODE для PB0 (позиция 0..3)
-    crl |= (0x1UL << 0);       // MODE=01 (10 МГц), CNF=00 (General Purpose Output PP)
+    crl &= ~(0xFUL << 0);      
+    crl |= (0x1UL << 0);       // Выход Push-Pull, 10МГц
     GPIOB_CRL = crl;
-    
-    // Начальное состояние: LOW (режим приёма RE активен, TX отключён)
-    GPIOB_BRR = (1UL << 0);    // Сбрасываем PB0 в ноль через BRR
+    GPIOB_BRR = (1UL << 0);    // Изначально RE активен (низкий уровень)
 
-    /* SysTick для миллисекундного тика */
+    /* Системный таймер миллисекундных тиков */
     SYSTICK_LOAD = SYSTICK_RELOAD_1MS;
     SYSTICK_VAL = 0u;
     SYSTICK_CTRL = SYSTICK_CTRL_CLKSOURCE | SYSTICK_CTRL_TICKINT | SYSTICK_CTRL_ENABLE;
 
-    uart1_init();
+    // УДАЛИЛИ uart1_init(); — она больше не нужна здесь
 
-    /* Сообщаем драйверу UART, какой пин использовать для RS-485 */
-    uart1_set_rs485_pin(GPIOB_BASE, 0); // Порт B, пин номер 0
+    // Настраиваем пин RS-485 для нового драйвера
+    uart1_set_rs485_pin(GPIOB_BASE, 0); 
+
+    // Активируем компаратор PVD защиты по питанию при старте
+    platform_pvd_init();
 }
 
 uint32_t platform_millis(void)
@@ -98,43 +195,23 @@ void platform_wfi(void)
 
 void platform_wdg_init(uint32_t timeout_ms)
 {
-    /* Unlock IWDG registers */
     IWDG_KR = IWDG_KR_KEY_UNLOCK;
+    IWDG_PR = 4u; // Прескалер 64
 
-    /* Select Prescaler: PR=4 -> Divider=64 */
-    IWDG_PR = 4u;
+    while ((IWDG_SR & IWDG_SR_PVU_BIT) != 0u) {}
 
-    /* Wait for PVU bit to clear */
-    while ((IWDG_SR & IWDG_SR_PVU_BIT) != 0u) {
-        /* Busy wait */
-    }
-
-    /* Calculate Reload Value */
-    /* Ticks = timeout_ms / 1.6 = timeout_ms * 10 / 16 = timeout_ms * 5 / 8 */
     uint32_t reload_val = (timeout_ms * 5u) / 8u;
-    
-    /* Clamp to valid range [1, 4095] */
-    if (reload_val > 4095u) {
-        reload_val = 4095u;
-    }
-    if (reload_val < 1u) {
-        reload_val = 1u;
-    }
+    if (reload_val > 4095u) reload_val = 4095u;
+    if (reload_val < 1u)  reload_val = 1u;
 
     IWDG_RLR = reload_val;
 
-    /* Wait for RVU bit to clear */
-    while ((IWDG_SR & IWDG_SR_RVU_BIT) != 0u) {
-        /* Busy wait */
-    }
-
-    /* Start IWDG */
+    while ((IWDG_SR & IWDG_SR_RVU_BIT) != 0u) {}
     IWDG_KR = IWDG_KR_KEY_START;
 }
 
 void platform_wdg_feed(void)
 {
-    /* Send reload key */
     IWDG_KR = IWDG_KR_KEY_RELOAD;
 }
 
@@ -155,29 +232,23 @@ bool platform_relay_get(void)
 
 void platform_write(const char *data, size_t len)
 {
-    if (data == NULL || len == 0u) {
-        return;
-    }
-    uart1_tx_bytes((const uint8_t *)data, len);
+    if (data == NULL || len == 0u) return;
+    // Используем наш новый асинхронный TX DMA для отправки логов в терминал
+    (void)uart1_tx_dma_async((const uint8_t *)data, len);
 }
 
 void platform_poll(void)
 {
-    uart1_task();
+    // В серийной DMA архитектуре поллинг пустой — за нас работает железо!
 }
-
-/* --- Real Flash Implementation (Skeleton) --- */
 
 err_t platform_flash_read_config(uint32_t slot_index, device_config_t *out)
 {
-    if (out == NULL) {
-        return ERR_INVALID_ARG;
-    }
+    if (out == NULL) return ERR_INVALID_ARG;
 
     uint32_t addr = (slot_index == 0u) ? FLASH_CONFIG_A_ADDR : FLASH_CONFIG_B_ADDR;
     const uint32_t *flash_ptr = (const uint32_t *)addr;
 
-    /* Read word-by-word into struct */
     uint8_t *dst = (uint8_t *)out;
     for (size_t i = 0; i < sizeof(device_config_t); i += 4) {
         uint32_t val = *flash_ptr++;
@@ -187,7 +258,6 @@ err_t platform_flash_read_config(uint32_t slot_index, device_config_t *out)
         dst[i+3] = (uint8_t)((val >> 24) & 0xFF);
     }
 
-    /* Check if erased (all 0xFF) */
     bool empty = true;
     for (size_t i = 0; i < sizeof(device_config_t); ++i) {
         if (dst[i] != 0xFF) {
@@ -195,88 +265,13 @@ err_t platform_flash_read_config(uint32_t slot_index, device_config_t *out)
             break;
         }
     }
-
-    if (empty) {
-        return ERR_NOT_FOUND;
-    }
-
+    if (empty) return ERR_NOT_FOUND;
     return ERR_OK;
 }
 
 err_t platform_flash_write_config(uint32_t slot_index, const device_config_t *cfg)
 {
-    if (cfg == NULL) {
-        return ERR_INVALID_ARG;
-    }
-
-    /*
-     * WARNING: This is a SKELETON.
-     * Real STM32 Flash programming requires:
-     * 1. Unlocking Flash registers (KEYR).
-     * 2. Erasing the page (PER).
-     * 3. Setting PG bit.
-     * 4. Writing half-words (16-bit) sequentially.
-     * 5. Checking BSY flag.
-     * 6. Locking Flash again.
-     *
-     * For this commit, we intentionally leave it as a NO-OP returning OK,
-     * so the build passes and logic flows, but persistence won't work on HW
-     * until we implement the actual register sequences in Commit 11.
-     */
-    
     (void)slot_index;
     (void)cfg;
-    
     return ERR_OK; 
-}
-
-/* --- I2C Implementation Skeleton for STM32F1 --- */
-
-#include "bsp/i2c.h"
-
-err_t i2c_init(void)
-{
-    /* TODO: Enable RCC_APB1ENR_I2C1EN, configure PB6/PB7 GPIO AF_OD */
-    return ERR_OK;
-}
-
-err_t i2c_mem_write(
-    uint8_t dev_addr,
-    uint8_t reg_addr,
-    const uint8_t *data,
-    size_t len)
-{
-    (void)dev_addr;
-    (void)reg_addr;
-    (void)data;
-    (void)len;
-    /* TODO: Implement HAL_I2C_Master_Transmit or LL equivalent */
-    return ERR_OK;
-}
-
-err_t i2c_mem_read(
-    uint8_t dev_addr,
-    uint8_t reg_addr,
-    uint8_t *data,
-    size_t len)
-{
-    (void)dev_addr;
-    (void)reg_addr;
-    
-    /* Return dummy valid-looking data for build verification */
-    if (len >= 6 && data != NULL) {
-        /* Simulate ~22.5C and 65% RH roughly encoded */
-        /* ST=41943 -> T=-45+175*41943/65535 ≈ 22.5C */
-        data[0] = 0xA3; /* High byte approx */
-        data[1] = 0x7B; /* Low byte approx */
-        data[2] = 0xBE; /* Fake CRC */
-        
-        /* SRH=42598 -> RH=100*42598/65535 ≈ 65% */
-        data[3] = 0xA6; 
-        data[4] = 0xC6;
-        data[5] = 0xEF; /* Fake CRC */
-    }
-    
-    /* TODO: Implement HAL_I2C_Master_Receive */
-    return ERR_OK;
 }

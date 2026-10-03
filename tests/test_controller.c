@@ -1,6 +1,7 @@
 #include "test_support.h"
 
 #include "core/controller.h"
+#include "platform/platform.h"
 
 static sample_t make_sample(temp_cd_t t, rh_cp_t rh, quality_t q)
 {
@@ -110,6 +111,44 @@ static void test_null_args(void)
     CHECK_EQ_INT(ctrl_update(&c, NULL), ERR_INVALID_ARG);
 }
 
+static void test_watchdog_fault_isolation(void)
+{
+    controller_t c;
+    controller_config_t cfg = CONTROLLER_DEFAULTS;
+    cfg.relay_safe_state = false;
+
+    // Вручную сбрасываем заглушку бэкапа перед тестом
+    uint8_t clean_crash_cnt = 0u;
+    platform_emergency_backup_save(&clean_crash_cnt, sizeof(clean_crash_cnt));
+
+    // Сбой 1: Первый перезапуск по Watchdog
+    ctrl_init_extended(&c, &cfg, RESET_CAUSE_WATCHDOG);
+    CHECK_EQ_INT(ctrl_get_state(&c), CTRL_STATE_WARMUP);
+    CHECK_EQ_INT(c.watchdog_crash_counter, 1u);
+    CHECK_FALSE(ctrl_relay_on(&c));
+
+    // Сбой 2: Второй перезапуск по Watchdog подряд
+    ctrl_init_extended(&c, &cfg, RESET_CAUSE_WATCHDOG);
+    CHECK_EQ_INT(ctrl_get_state(&c), CTRL_STATE_WARMUP);
+    CHECK_EQ_INT(c.watchdog_crash_counter, 2u);
+
+    // Сбой 3: Третий перезапуск по Watchdog подряд — критическая авария!
+    ctrl_init_extended(&c, &cfg, RESET_CAUSE_WATCHDOG);
+    CHECK_EQ_INT(ctrl_get_state(&c), CTRL_STATE_SAFE); // Должен уйти в SAFE
+    CHECK_EQ_INT(c.watchdog_crash_counter, 3u);
+    CHECK_FALSE(ctrl_relay_on(&c));
+
+    // Проверяем, что в состоянии SAFE автомат блокирует любые новые замеры датчика
+    sample_t ok_sample;
+    ok_sample.temp_cd = 2250;
+    ok_sample.rh_cp = 6500;
+    ok_sample.quality = QUALITY_VALID;
+    
+    err_t e = ctrl_update(&c, &ok_sample);
+    CHECK_EQ_INT(e, ERR_HW); // Должен вернуть аппаратную ошибку
+    CHECK_EQ_INT(ctrl_get_state(&c), CTRL_STATE_SAFE); // Состояние не должно измениться
+}
+
 int main(void)
 {
     RUN(test_initial_safe_state);
@@ -117,6 +156,7 @@ int main(void)
     RUN(test_warmup_state);
     RUN(test_hysteresis_on_off);
     RUN(test_null_args);
+    RUN(test_watchdog_fault_isolation);
 
     return test_report();
 }

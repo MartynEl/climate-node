@@ -152,7 +152,9 @@ app_report_t app_report(const app_t *app)
 
 bool app_can_feed_watchdog(const app_t *app)
 {
-    if (app == NULL) return false;
+    if (app == NULL) {
+        return false;
+    }
     return (app->ticket_mask & app->required_tickets) == app->required_tickets;
 }
 

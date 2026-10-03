@@ -85,3 +85,26 @@ __attribute__((weak)) void platform_wdg_feed(void)
 {
     /* No-op for host/tests by default */
 }
+
+// Эмуляция Backup RAM STM32 в оперативной памяти ПК для тестов
+static uint8_t g_stub_backup_reg = 0u;
+
+__attribute__((weak)) void platform_emergency_backup_save(const void *data, size_t len)
+{
+    if (data == NULL || len == 0u) {
+        return;
+    }
+    // Для тестов нам достаточно сохранить 1 байт (счетчик watchdog_crash_counter)
+    const uint8_t *byte_ptr = (const uint8_t *)data;
+    g_stub_backup_reg = *byte_ptr;
+}
+
+__attribute__((weak)) bool platform_emergency_backup_load(void *out_data, size_t len)
+{
+    if (out_data == NULL || len == 0u) {
+        return false;
+    }
+    uint8_t *byte_ptr = (uint8_t *)out_data;
+    *byte_ptr = g_stub_backup_reg;
+    return true;
+}

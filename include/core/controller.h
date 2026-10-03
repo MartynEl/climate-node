@@ -44,6 +44,9 @@ typedef struct {
 
     uint32_t sample_count;
     uint32_t fault_count;
+
+    uint8_t watchdog_crash_counter; // Счетчик подряд идущих падений по WDT
+    bool power_is_dying;            // Флаг критического падения питания 
 } controller_t;
 
 void ctrl_init(controller_t *c, const controller_config_t *cfg);
@@ -67,5 +70,15 @@ static inline ctrl_state_t ctrl_get_state(const controller_t *c)
 {
     return c->state;
 }
+
+/**
+ * Новая расширенная инициализация ядра с учетом причин сброса
+ */
+void ctrl_init_extended(controller_t *c, const controller_config_t *cfg, reset_cause_t cause);
+
+/**
+ * Экстренный перевод ядра в безопасный режим при Brown-out (вызывается из прерывания)
+ */
+void ctrl_force_emergency_shutdown(controller_t *c);
 
 #endif // CORE_CONTROLLER_H

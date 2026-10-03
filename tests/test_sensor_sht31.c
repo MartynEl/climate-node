@@ -51,12 +51,12 @@ err_t i2c_mem_read(
 static void set_mock_values(uint16_t st_raw, uint16_t srh_raw)
 {
     g_mock_i2c_data[0] = (uint8_t)(st_raw >> 8);
-    g_mock_i2c_data[1] = (uint8_t)(st_raw & 0xFF);
-    g_mock_i2c_data[2] = 0xBE; /* Dummy CRC */
+    g_mock_i2c_data[1] = (uint8_t)(st_raw & 0xFFu);
+    g_mock_i2c_data[2] = 0xBEu; /* Dummy CRC */
 
     g_mock_i2c_data[3] = (uint8_t)(srh_raw >> 8);
-    g_mock_i2c_data[4] = (uint8_t)(srh_raw & 0xFF);
-    g_mock_i2c_data[5] = 0xEF; /* Dummy CRC */
+    g_mock_i2c_data[4] = (uint8_t)(srh_raw & 0xFFu);
+    g_mock_i2c_data[5] = 0xEFu; /* Dummy CRC */
 
     g_mock_i2c_fail = false;
 }

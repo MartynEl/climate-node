@@ -112,7 +112,9 @@ err_t storage_save(const device_config_t *cfg)
 
 void storage_finalize(device_config_t *cfg)
 {
-    if (cfg == NULL) return;
+    if (cfg == NULL) {
+        return;
+    }
     cfg->magic = 0xCAFEBABEU;
     cfg->version = 1u;
     cfg->size = sizeof(device_config_t);

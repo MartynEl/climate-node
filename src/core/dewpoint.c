@@ -32,34 +32,25 @@ static int32_t div_round_pos_den(int32_t numerator, int32_t denominator)
 
 static int32_t ln_rh_q10(rh_cp_t rh_cp)
 {
-    /*
-     * Clamp humidity to a safe finite range.
-     * 0% humidity leads to log(0), so we clamp to 1.00%.
-     * For climate control this is acceptable and prevents numeric faults.
-     */
-    if (rh_cp < 100U) {
-        rh_cp = 100U;
+    rh_cp_t local_rh = rh_cp;
+
+    if (local_rh < 100U) {
+        local_rh = 100U;
     }
 
-    if (rh_cp > RH_CP_MAX) {
-        rh_cp = RH_CP_MAX;
+    if (local_rh > RH_CP_MAX) {
+        local_rh = RH_CP_MAX;
     }
 
-    /*
-     * rh_cp is 0.01%, so:
-     *   100  -> 1%
-     *   10000 -> 100%
-     *
-     * Table index is integer percent 0..100.
-     */
-    uint32_t percent = rh_cp / 100U;
-    uint32_t frac = rh_cp % 100U;
+    uint32_t percent = local_rh / 100U;
+    uint32_t frac = local_rh % 100U;
 
     int32_t y0 = dewpoint_ln_rh_q10[percent];
     int32_t y1 = (percent < 100U) ? dewpoint_ln_rh_q10[percent + 1U] : y0;
 
     return y0 + ((y1 - y0) * (int32_t)frac) / 100;
 }
+
 
 err_t dewpoint_calc_cd(temp_cd_t temp_cd, rh_cp_t rh_cp, temp_cd_t *out_dew_cd)
 {

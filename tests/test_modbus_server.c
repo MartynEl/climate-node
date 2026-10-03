@@ -172,3 +172,8 @@ int main(void)
 
     return test_report();
 }
+
+void modbus_server_on_request_ready(const modbus_request_t *req)
+{
+    (void)req; // Заглушка для прохождения линковки хост-теста
+}

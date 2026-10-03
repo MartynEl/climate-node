@@ -2,259 +2,208 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* 
- * STM32F103 USART1 registers.
- */
-#define RCC_BASE             0x40021000UL
-#define RCC_APB2ENR          (*(volatile uint32_t *)(RCC_BASE + 0x18UL))
-#define RCC_APB2ENR_IOPAEN   (1UL << 2)
-#define RCC_APB2ENR_USART1EN (1UL << 14)
+/* --- Регистры DMA1 (STM32F103) --- */
+#define DMA1_BASE             0x40020000UL
+#define DMA1_ISR              (*(volatile uint32_t *)(DMA1_BASE + 0x00UL))
+#define DMA1_IFCR             (*(volatile uint32_t *)(DMA1_BASE + 0x04UL))
 
-#define GPIOA_BASE           0x40010800UL
-#define GPIOA_CRH            (*(volatile uint32_t *)(GPIOA_BASE + 0x04UL))
+// Канал 4 (USART1_TX)
+#define DMA1_CCR4             (*(volatile uint32_t *)(DMA1_BASE + 0x44UL))
+#define DMA1_CNDTR4           (*(volatile uint32_t *)(DMA1_BASE + 0x48UL))
+#define DMA1_CPAR4            (*(volatile uint32_t *)(DMA1_BASE + 0x4CUL))
+#define DMA1_CMAR4            (*(volatile uint32_t *)(DMA1_BASE + 0x50UL))
 
+// Канал 5 (USART1_RX)
+#define DMA1_CCR5             (*(volatile uint32_t *)(DMA1_BASE + 0x58UL))
+#define DMA1_CNDTR5           (*(volatile uint32_t *)(DMA1_BASE + 0x5CUL))
+#define DMA1_CPAR5            (*(volatile uint32_t *)(DMA1_BASE + 0x60UL))
+#define DMA1_CMAR5            (*(volatile uint32_t *)(DMA1_BASE + 0x64UL))
+
+/* --- Дополнения к регистрам USART1 --- */
 #define USART1_BASE          0x40013800UL
 #define USART1_SR            (*(volatile uint32_t *)(USART1_BASE + 0x00UL))
 #define USART1_DR            (*(volatile uint32_t *)(USART1_BASE + 0x04UL))
-#define USART1_BRR           (*(volatile uint32_t *)(USART1_BASE + 0x08UL))
 #define USART1_CR1           (*(volatile uint32_t *)(USART1_BASE + 0x0CUL))
-#define USART1_CR2           (*(volatile uint32_t *)(USART1_BASE + 0x10UL))
 #define USART1_CR3           (*(volatile uint32_t *)(USART1_BASE + 0x14UL))
 
-#define USART1_SR_RXNE       (1UL << 5)
-#define USART1_SR_ORE        (1UL << 3)
-#define USART1_SR_TXE        (1UL << 7)
-#define USART1_SR_TC         (1UL << 6) /* Transmission Complete */
+#define USART1_SR_IDLE       (1UL << 4)
+#define USART1_CR1_IDLEIE    (1UL << 4)
+#define USART1_CR3_DMAT      (1UL << 7) // Enable DMA for Transmitter
+#define USART1_CR3_DMAR      (1UL << 6) // Enable DMA for Receiver
 
-#define USART1_CR1_UE        (1UL << 13)
-#define USART1_CR1_TE        (1UL << 3)
-#define USART1_CR1_RE        (1UL << 2)
-#define USART1_CR1_RXNEIE    (1UL << 5)
+/* --- Регистры RCC для DMA --- */
+#define RCC_BASE             0x40021000UL
+#define RCC_AHBENR           (*(volatile uint32_t *)(RCC_BASE + 0x14UL))
+#define RCC_AHBENR_DMA1EN    (1UL << 0)
 
-/*
- * NVIC interrupt set enable register 1: IRQ 32..63.
- * USART1_IRQn for STM32F103 is 37.
- */
+/* --- Регистры NVIC (Добавилось прерывание DMA1) --- */
+#define NVIC_ISER0           (*(volatile uint32_t *)0xE000E100UL)
 #define NVIC_ISER1           (*(volatile uint32_t *)0xE000E104UL)
-#define USART1_IRQ_BIT       (1UL << (37UL - 32UL))
+#define DMA1_CH4_IRQ_BIT     (1UL << 14) // IRQ 14 (Channel 4)
+#define USART1_IRQ_BIT       (1UL << (37UL - 32UL)) // IRQ 37 (1 << 5 в ISER1)
 
-/*
- * Default clock in this skeleton is HSI 8 MHz.
- * 115200 baud, oversampling by 16:
- *   BRR = 0x457
- */
-#define USART1_BRR_115200_8MHZ 0x457UL
+/* --- Конфигурация буферов --- */
+#define UART_RX_DMA_BUF_SIZE 256u
+static uint8_t g_rx_dma_buffer[UART_RX_DMA_BUF_SIZE];
+static size_t g_last_rx_pos = 0u;
 
-#define UART1_TX_RING_SIZE     128u
-#define UART1_TX_RING_MASK     (UART1_TX_RING_SIZE - 1u)
-#define UART1_TX_MAX_PER_TASK  16u
-#define UART1_RX_RING_SIZE     256u
-#define UART1_RX_RING_MASK     (UART1_RX_RING_SIZE - 1u)
+static uart_callback_fn g_uart_callback = NULL;
 
-static uint8_t g_tx_ring[UART1_TX_RING_SIZE];
-static size_t g_tx_head = 0u;
-static size_t g_tx_tail = 0u;
-static size_t g_tx_count = 0u;
-static uint32_t g_tx_dropped = 0u;
-
-static uint8_t g_rx_ring[UART1_RX_RING_SIZE];
-static volatile uint16_t g_rx_head = 0u;
-static volatile uint16_t g_rx_tail = 0u;
-static volatile uint32_t g_rx_overflow = 0u;
-
-/* --- RS-485 Half-Duplex Control --- */
+/* --- Настройки RS-485 --- */
 static bool g_rs485_mode = false;
-static volatile uint32_t *g_gpio_bsrr_ptr = NULL; // Points to GPIOx_BSRR
-static volatile uint32_t *g_gpio_brr_ptr = NULL;  // Points to GPIOx_BRR
-static uint32_t g_de_pin_mask = 0u;               // Bit mask for DE pin (e.g., 1<<0 for PA0/PB0/etc)
-static bool g_transmission_in_progress = false;
+static volatile uint32_t *g_gpio_bsrr_ptr = NULL;
+static volatile uint32_t *g_gpio_brr_ptr = NULL;
+static uint32_t g_de_pin_mask = 0u;
 
-/**
- * Configure UART1 for RS-485 operation.
- * @param gpio_base_address Base address of the GPIO port controlling DE/RE (e.g., GPIOB_BASE)
- * @param de_pin_number Pin number on that port (0-15)
- */
 void uart1_set_rs485_pin(uint32_t gpio_base_address, uint32_t de_pin_number) {
     if (de_pin_number > 15u) return;
-    
     g_de_pin_mask = (1UL << de_pin_number);
-    
-    // Calculate addresses based on standard STM32F1 GPIO layout
-    // BSRR is at offset 0x0C, BRR is at offset 0x10 from GPIO Base
     g_gpio_bsrr_ptr = (volatile uint32_t *)(gpio_base_address + 0x0CU);
     g_gpio_brr_ptr  = (volatile uint32_t *)(gpio_base_address + 0x10U);
-    
     g_rs485_mode = true;
-    
-    // Ensure receiver is enabled initially (DE low)
-    if (g_gpio_brr_ptr != NULL) {
-        *g_gpio_brr_ptr = g_de_pin_mask;
-    }
+    if (g_gpio_brr_ptr != NULL) *g_gpio_brr_ptr = g_de_pin_mask; // RE Mode active
 }
 
-void uart1_init(void)
+/**
+ * Асинхронная инициализация UART1 + DMA1
+ */
+void uart1_async_init(uart_callback_fn callback)
 {
-    /*
-     * Enable GPIOA and USART1 clocks.
-     */
-    RCC_APB2ENR |= RCC_APB2ENR_IOPAEN | RCC_APB2ENR_USART1EN;
+    g_uart_callback = callback;
+    g_last_rx_pos = 0u;
 
-    /*
-     * PA9 = USART1_TX:
-     *   50 MHz alternate function push-pull => 0xB in CRH nibble for pin 9.
-     *
-     * PA10 = USART1_RX:
-     *   floating input => 0x4 in CRH nibble for pin 10.
-     */
-    uint32_t crh = GPIOA_CRH;
-    crh &= ~(0xFUL << 4);
-    crh |= (0xBUL << 4);
-    crh &= ~(0xFUL << 8);
-    crh |= (0x4UL << 8);
-    GPIOA_CRH = crh;
+    // 1. Включаем тактирование порта A, USART1 и контроллера DMA1
+    *(volatile uint32_t *)0x40021018UL |= (1UL << 2) | (1UL << 14); // APB2ENR: IOPAEN, USART1EN
+    RCC_AHBENR |= RCC_AHBENR_DMA1EN;
 
-    g_tx_head = 0u;
-    g_tx_tail = 0u;
-    g_tx_count = 0u;
-    g_tx_dropped = 0u;
-    g_rx_head = 0u;
-    g_rx_tail = 0u;
-    g_rx_overflow = 0u;
-    g_transmission_in_progress = false;
+    // 2. Конфигурация пинов PA9 (TX - Alt PP) и PA10 (RX - Floating Input)
+    uint32_t crh = *(volatile uint32_t *)0x40010804UL; // GPIOA_CRH
+    crh &= ~0xFF0UL; // Очищаем настройки пинов 9 и 10
+    crh |= 0x4B0UL;  // PA9: AF PP (0xB), PA10: Float Input (0x4)
+    *(volatile uint32_t *)0x40010804UL = crh;
 
-    USART1_BRR = USART1_BRR_115200_8MHZ;
-    USART1_CR2 = 0u;
-    USART1_CR3 = 0u;
-    USART1_CR1 = USART1_CR1_UE | USART1_CR1_TE | USART1_CR1_RE | USART1_CR1_RXNEIE;
-    NVIC_ISER1 |= USART1_IRQ_BIT;
+    // 3. Настройка USART1: Скорость 115200 при 8МГц HSI (BRR = 0x457)
+    *(volatile uint32_t *)0x40013808UL = 0x457UL; // USART1_BRR
+
+    // 4. Конфигурация DMA1 Channel 5 (Прием - RX)
+    DMA1_CPAR5 = (uint32_t)&USART1_DR;
+    DMA1_CMAR5 = (uint32_t)(uintptr_t)g_rx_dma_buffer;
+    DMA1_CNDTR5 = UART_RX_DMA_BUF_SIZE;
+    /* CCR5: 
+       MINC (1<<7) - инкремент адреса памяти
+       CIRC (1<<5) - циклический режим буфера
+       EN   (1<<0) - запуск канала
+    */
+    DMA1_CCR5 = (1UL << 7) | (1UL << 5) | (1UL << 0);
+
+    // 5. Конфигурация DMA1 Channel 4 (Передача - TX)
+    DMA1_CPAR4 = (uint32_t)&USART1_DR;
+    /* CCR4:
+       DIR  (1<<4) - направление: из памяти в периферию
+       MINC (1<<7) - инкремент адреса памяти
+       TCIE (1<<1) - прерывание по окончании передачи
+    */
+    DMA1_CCR4 = (1UL << 4) | (1UL << 7) | (1UL << 1);
+
+    // 6. Включаем аппаратный запрос DMA в USART1 и прерывания
+    USART1_CR3 |= USART1_CR3_DMAT | USART1_CR3_DMAR;
+    // Разрешаем работу UART, передатчика, приемника + прерывание по тишине линии (IDLEIE)
+    USART1_CR1 = (1UL << 13) | (1UL << 3) | (1UL << 2) | USART1_CR1_IDLEIE;
+
+    // 7. Разрешаем прерывания в NVIC
+    NVIC_ISER0 |= DMA1_CH4_IRQ_BIT; // Прерывание завершения TX DMA
+    NVIC_ISER1 |= USART1_IRQ_BIT;   // Прерывание IDLE Line в UART
 }
 
-size_t uart1_tx_bytes(const uint8_t *data, size_t len)
+/**
+ * Асинхронный запуск передачи пачки данных через DMA
+ */
+bool uart1_tx_dma_async(const uint8_t *data, size_t len)
 {
-    if (data == NULL || len == 0u) {
-        return 0u;
+    // Если предыдущая передача DMA еще активна — канал включен, выходим
+    if ((DMA1_CCR4 & 1UL) != 0u) {
+        return false;
     }
 
-    size_t accepted = 0u;
-    for (size_t i = 0u; i < len; ++i) {
-        if (g_tx_count >= UART1_TX_RING_SIZE) {
-            g_tx_dropped++;
-            continue;
-        }
-        g_tx_ring[g_tx_head] = data[i];
-        g_tx_head = (g_tx_head + 1u) & UART1_TX_RING_MASK;
-        g_tx_count++;
-        accepted++;
-    }
-    
-    // In RS-485 mode, switching happens inside uart1_task when actually sending bytes.
-    // This prevents race conditions where multiple calls toggle pins rapidly.
-    
-    return accepted;
-}
-
-void uart1_task(void)
-{
-    uint32_t sent = 0u;
-    
-    // Handle RS-485 Line State Management
-    
     if (g_rs485_mode && g_gpio_bsrr_ptr != NULL) {
-        
-        // Scenario 1: We have data to send but haven't switched to TX yet
-        if (!g_transmission_in_progress && g_tx_count > 0u) {
-            // Switch to Transmit Mode (Set DE High)
-            *g_gpio_bsrr_ptr = g_de_pin_mask; 
-            
-            // Small delay might be needed depending on hardware capacitance, 
-            // usually negligible for MAX3485 at these speeds, but good practice to note.
-            
-            g_transmission_in_progress = true;
-        }
-        
-        // Scenario 2: We are transmitting
-        if (g_transmission_in_progress) {
-            while (g_tx_count > 0u && sent < UART1_TX_MAX_PER_TASK) {
-                if ((USART1_SR & USART1_SR_TXE) == 0u) {
-                    break; // Wait for Data Register Empty
-                }
-                USART1_DR = g_tx_ring[g_tx_tail];
-                g_tx_tail = (g_tx_tail + 1u) & UART1_TX_RING_MASK;
-                g_tx_count--;
-                sent++;
-            }
-            
-            // Check if buffer is empty AND transmission is physically complete
-            if (g_tx_count == 0u) {
-                // Must wait for TC (Transmission Complete) flag before disabling DE
-                // Otherwise last byte gets truncated
-                if ((USART1_SR & USART1_SR_TC) != 0u) {
-                    // Switch back to Receive Mode (Clear DE / Set RE)
-                    *g_gpio_brr_ptr = g_de_pin_mask;
-                    g_transmission_in_progress = false;
-                    
-                    // Clear TC flag manually if necessary? Usually auto-cleared on next write, 
-                    // but reading SR clears ORE/RXNE. TC needs careful handling.
-                    // Writing to DR resets TC. Since we stopped writing, we rely on it staying set until next start.
-                    // Some implementations clear it explicitly:
-                    // USART1_SR &= ~USART1_SR_TC; // Not recommended as it's read-only in some docs, better to ignore or handle via flow control.
-                }
-            }
-        }
-    } else {
-        // Standard Full-Duplex Operation (Original Code)
-        while (g_tx_count > 0u && sent < UART1_TX_MAX_PER_TASK) {
-            if ((USART1_SR & USART1_SR_TXE) == 0u) {
-                break;
-            }
-            USART1_DR = g_tx_ring[g_tx_tail];
-            g_tx_tail = (g_tx_tail + 1u) & UART1_TX_RING_MASK;
-            g_tx_count--;
-            sent++;
-        }
+        *g_gpio_bsrr_ptr = g_de_pin_mask; // Переключаем MAX3485 на передачу (DE=1)
     }
-}
 
-uint32_t uart1_dropped_bytes(void)
-{
-    return g_tx_dropped;
-}
+    // Сбрасываем флаг TC (Transmission Complete) в UART, чтобы отследить физический уход байт
+    USART1_SR &= ~(1UL << 6); 
 
-bool uart1_rx_pop(void *ctx, uint8_t *out)
-{
-    (void)ctx;
-    if (out == NULL) {
-        return false;
-    }
-    uint16_t tail = g_rx_tail;
-    if (tail == g_rx_head) {
-        return false;
-    }
-    *out = g_rx_ring[tail];
-    g_rx_tail = (uint16_t)((tail + 1u) & UART1_RX_RING_MASK);
+    DMA1_CCR4 &= ~1UL; // Выключаем канал для переконфигурации
+    DMA1_CMAR4 = (uint32_t)(uintptr_t)data;
+    DMA1_CNDTR4 = len;
+    DMA1_CCR4 |= 1UL;  // Запускаем передачу через DMA
+
     return true;
 }
 
-uint32_t uart1_rx_overflow_count(void)
+/**
+ * ИСР: Прерывание DMA1 по окончании передачи (Channel 4)
+ */
+void DMA1_Channel4_IRQHandler(void)
 {
-    return g_rx_overflow;
+    // Проверяем флаг завершения передачи (TCIF4) в регистре ISR
+    if ((DMA1_ISR & (1UL << 13)) != 0u) {
+        DMA1_IFCR = (1UL << 13); // Сбрасываем флаг прерывания
+        DMA1_CCR4 &= ~1UL;       // Выключаем канал DMA
+
+        // DMA выплюнул всё в регистр данных, но байты еще могут физически лететь по проводам.
+        // Ждем флага TC (Transmission Complete) от самого UART.
+        while ((USART1_SR & (1UL << 6)) == 0u) {
+            // Короткое ожидание ухода последнего стоп-бита
+        }
+
+        if (g_rs485_mode && g_gpio_brr_ptr != NULL) {
+            *g_gpio_brr_ptr = g_de_pin_mask; // Возвращаем MAX3485 на прием (RE=active)
+        }
+
+        if (g_uart_callback != NULL) {
+            g_uart_callback(NULL, 0u, UART_EVENT_TX_COMPLETE);
+        }
+    }
 }
 
+/**
+ * ИСР: Прерывание UART1 (Ловит событие тишины шины IDLE)
+ */
 void USART1_IRQHandler(void)
 {
     uint32_t sr = USART1_SR;
-    if ((sr & (USART1_SR_RXNE | USART1_SR_ORE)) != 0u) {
-        uint8_t byte = (uint8_t)(USART1_DR & 0xFFu);
-        if ((sr & USART1_SR_ORE) != 0u) {
-            g_rx_overflow++;
-        }
-        uint16_t head = g_rx_head;
-        uint16_t next = (uint16_t)((head + 1u) & UART1_RX_RING_MASK);
-        if (next != g_rx_tail) {
-            g_rx_ring[head] = byte;
-            g_rx_head = next;
-        } else {
-            g_rx_overflow++;
+
+    if ((sr & USART1_SR_IDLE) != 0u) {
+        // Очистка флага IDLE в STM32F1: сначала читаем SR (уже сделано), затем читаем DR
+        volatile uint32_t dummy = USART1_DR;
+        (void)dummy;
+
+        // Вычисляем, сколько байт сейчас лежит в кольцевом буфере DMA
+        // CNDTR5 считает вниз от исходного размера буфера
+        size_t current_dma_pos = UART_RX_DMA_BUF_SIZE - DMA1_CNDTR5;
+        size_t len = 0u;
+
+        if (current_dma_pos != g_last_rx_pos) {
+            if (current_dma_pos > g_last_rx_pos) {
+                len = current_dma_pos - g_last_rx_pos;
+                if (g_uart_callback != NULL) {
+                    // Передаем указатель на начало пачки БЕЗ копирования (Zero-copy)
+                    g_uart_callback(&g_rx_dma_buffer[g_last_rx_pos], len, UART_EVENT_RX_CHUNK);
+                }
+            } else {
+                // DMA закольцевался (произошел wrap-around)
+                // В реальном Modbus RTU пакет не может быть разорван переходом через край 256-байтного буфера,
+                // так как максимальный размер фрейма Modbus = 256 байт. 
+                // Для закрытия гештальта обрабатываем этот редкий случай:
+                len = UART_RX_DMA_BUF_SIZE - g_last_rx_pos;
+                if (g_uart_callback != NULL && len > 0u) {
+                    g_uart_callback(&g_rx_dma_buffer[g_last_rx_pos], len, UART_EVENT_RX_CHUNK);
+                }
+                if (g_uart_callback != NULL && current_dma_pos > 0u) {
+                    g_uart_callback(&g_rx_dma_buffer[0], current_dma_pos, UART_EVENT_RX_CHUNK);
+                }
+            }
+            g_last_rx_pos = current_dma_pos;
         }
     }
 }
